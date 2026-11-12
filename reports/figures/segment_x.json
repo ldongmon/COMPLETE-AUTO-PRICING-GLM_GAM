@@ -1,0 +1,10 @@
+{
+  "column": "BonusMalus",
+  "low": 51,
+  "high": 80,
+  "label": "BonusMalus 51-80",
+  "exposure_share": 0.28330101193766005,
+  "cost_relativity": 1.1661794856843675,
+  "indicated_price_change": 0.17,
+  "measured_on": "validation + test sets (out of sample)"
+}

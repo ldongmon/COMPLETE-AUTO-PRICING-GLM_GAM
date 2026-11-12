@@ -1,0 +1,771 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Auto Insurance Pricing &amp; Retention Engine | Leprince Dongmo Nanda</title>
+
+<style>
+    :root {
+        --navy: #003366;
+        --blue: #0066cc;
+        --blue-dark: #004c99;
+        --green: #1e8a4c;
+        --amber: #b8860b;
+        --purple: #6f42c1;
+        --bg: #f4f6f9;
+        --card-border: #e3e6ea;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, Helvetica, sans-serif;
+        margin: 0;
+        padding: 0;
+        background: var(--bg);
+        color: #2a2a2a;
+        line-height: 1.65;
+    }
+
+    header {
+        background: linear-gradient(135deg, var(--navy), #001a33);
+        color: white;
+        padding: 60px 20px 70px;
+        text-align: center;
+    }
+
+    header .kicker {
+        text-transform: uppercase;
+        letter-spacing: 2px;
+        font-size: 13px;
+        color: #9ec5f2;
+        font-weight: 600;
+        margin-bottom: 14px;
+    }
+
+    header h1 {
+        margin: 0;
+        font-size: 38px;
+        line-height: 1.25;
+        max-width: 900px;
+        margin-left: auto;
+        margin-right: auto;
+    }
+
+    header p.subtitle {
+        margin-top: 16px;
+        font-size: 18px;
+        color: #cfe0f5;
+        max-width: 700px;
+        margin-left: auto;
+        margin-right: auto;
+    }
+
+    header .byline {
+        margin-top: 22px;
+        font-size: 15px;
+        color: #9ec5f2;
+    }
+
+    header .hero-buttons {
+        margin-top: 30px;
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 14px;
+    }
+
+    .container {
+        max-width: 1000px;
+        margin: -40px auto 0;
+        padding: 0 20px 40px;
+    }
+
+    .card {
+        background: white;
+        border-radius: 12px;
+        box-shadow: 0 4px 20px rgba(0,0,0,0.07);
+        padding: 34px 38px;
+        margin-bottom: 28px;
+        border: 1px solid var(--card-border);
+    }
+
+    h2 {
+        color: var(--navy);
+        border-left: 4px solid var(--blue);
+        padding-left: 12px;
+        font-size: 26px;
+        margin-top: 0;
+    }
+
+    h3 {
+        color: var(--navy);
+        font-size: 19px;
+    }
+
+    a { color: var(--blue); }
+    a:hover { color: var(--blue-dark); }
+
+    .button {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        background: var(--blue);
+        color: white !important;
+        padding: 13px 22px;
+        border-radius: 8px;
+        text-decoration: none;
+        font-weight: 600;
+        font-size: 14.5px;
+        transition: 0.2s;
+        box-shadow: 0 3px 10px rgba(0,102,204,0.25);
+    }
+    .button:hover { background: var(--blue-dark); transform: translateY(-1px); }
+    .button.secondary { background: white; color: var(--blue) !important; border: 2px solid var(--blue); box-shadow: none; }
+    .button.secondary:hover { background: #eef5ff; }
+    .button.green { background: var(--green); box-shadow: 0 3px 10px rgba(30,138,76,0.25); }
+    .button.green:hover { background: #166b3a; }
+    .button.purple { background: var(--purple); box-shadow: 0 3px 10px rgba(111,66,193,0.25); }
+    .button.purple:hover { background: #59359e; }
+
+    /* --- TOC --- */
+    .toc { display: flex; flex-wrap: wrap; gap: 10px; padding: 0; list-style: none; margin: 0; }
+    .toc li a {
+        display: block;
+        background: #eef3fb;
+        padding: 9px 16px;
+        border-radius: 20px;
+        font-size: 14px;
+        font-weight: 600;
+        color: var(--navy);
+        text-decoration: none;
+    }
+    .toc li a:hover { background: #dbe8fb; }
+
+    /* --- callout box --- */
+    .callout {
+        background: linear-gradient(135deg, #eef7ff, #e3f2fd);
+        border: 1px solid #bfe0ff;
+        border-radius: 10px;
+        padding: 24px 28px;
+        margin: 20px 0;
+    }
+    .callout.result {
+        background: linear-gradient(135deg, #eafaf0, #dcf5e6);
+        border: 1px solid #b8e6c8;
+    }
+    .callout .num {
+        font-size: 34px;
+        font-weight: 800;
+        color: var(--green);
+    }
+
+    /* --- KPI grid --- */
+    .kpi-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 16px;
+        margin: 22px 0;
+    }
+    .kpi {
+        background: white;
+        border: 1px solid var(--card-border);
+        border-radius: 10px;
+        padding: 18px;
+        text-align: center;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+    }
+    .kpi .val { font-size: 26px; font-weight: 800; color: var(--blue); }
+    .kpi .lbl { font-size: 13px; color: #667; margin-top: 4px; }
+
+    /* --- phase cards --- */
+    .phase {
+        border: 1px solid var(--card-border);
+        border-left: 5px solid var(--blue);
+        border-radius: 8px;
+        padding: 18px 22px;
+        margin-bottom: 16px;
+        background: #fbfcfe;
+    }
+    .phase.gam { border-left-color: var(--purple); }
+    .phase.diagnosis { border-left-color: var(--amber); }
+    .phase.decision { border-left-color: var(--green); }
+    .phase h4 {
+        margin: 0 0 6px 0;
+        color: var(--navy);
+        font-size: 16.5px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+    .phase .q {
+        font-style: italic;
+        color: #556;
+        font-size: 14.5px;
+        margin: 6px 0 10px;
+    }
+    .phase .finding {
+        font-size: 14.5px;
+    }
+    .phase .nb-link {
+        font-size: 13px;
+        font-weight: 600;
+        white-space: nowrap;
+    }
+
+    /* --- app pages grid --- */
+    .app-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        gap: 18px;
+        margin: 20px 0;
+    }
+    .app-page {
+        background: white;
+        border: 1px solid var(--card-border);
+        border-radius: 10px;
+        padding: 20px;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+    }
+    .app-page .icon { font-size: 30px; }
+    .app-page h4 { color: var(--navy); margin: 10px 0 6px; }
+    .app-page p { font-size: 14px; color: #555; margin: 0; }
+
+    /* --- architecture --- */
+    .arch {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        justify-content: center;
+        text-align: center;
+        margin: 20px 0;
+    }
+    .arch .step {
+        background: var(--navy);
+        color: white;
+        padding: 12px 18px;
+        border-radius: 8px;
+        font-weight: 600;
+        font-size: 14px;
+        min-width: 130px;
+    }
+    .arch .arrow { display: flex; align-items: center; font-size: 20px; color: #99a; }
+
+    table.simple { border-collapse: collapse; width: 100%; margin: 16px 0; font-size: 14.5px; }
+    table.simple th, table.simple td { border: 1px solid var(--card-border); padding: 9px 12px; text-align: left; }
+    table.simple th { background: #eef3fb; color: var(--navy); }
+
+    .tag {
+        display: inline-block;
+        background: #e9ecef;
+        padding: 5px 12px;
+        border-radius: 20px;
+        font-size: 12.5px;
+        color: #495057;
+        margin: 3px 4px 3px 0;
+    }
+
+    .stack-tags { margin-top: 10px; }
+
+    footer {
+        text-align: center;
+        padding: 30px 20px;
+        background: var(--navy);
+        color: #cfe0f5;
+        margin-top: 10px;
+        font-size: 14px;
+    }
+    footer a { color: white; }
+
+    @media (max-width: 600px) {
+        header h1 { font-size: 28px; }
+        .card { padding: 24px 20px; }
+    }
+</style>
+</head>
+
+
+<body>
+
+<header>
+    <div class="kicker">Actuarial Pricing &middot; GLM / GAM &middot; End-to-End Project</div>
+    <h1>Auto Insurance Pricing &amp; Retention Engine</h1>
+    <p class="subtitle">
+        A motor insurance pricing pipeline built end to end on the French Motor TPL dataset: frequency
+        and severity models, portfolio diagnosis, retention and conversion scenarios, and an interactive
+        repricing tool.
+    </p>
+    <p class="byline"><strong>Leprince Dongmo Nanda</strong>, Actuary / Pricing Data Scientist</p>
+    <div class="hero-buttons">
+        <a href="https://github.com/ldongmon/COMPLETE-AUTO-PRICING-GLM_GAM" class="button" target="_blank">View on GitHub</a>
+        <a href="https://ldongmon-complete-auto-pricing-glm-gam-appstreamlit-app-jajm0q.streamlit.app/" class="button green" target="_blank">Open the app</a>
+        <a href="#report" class="button secondary" style="background:transparent;border-color:white;color:white !important;">Read the report</a>
+        <a href="#request-report" class="button purple js-request-report">Request the full PDF report</a>
+    </div>
+</header>
+
+<div class="container" id="report">
+
+<!-- ============================================================ -->
+<div class="card">
+    <h2>Contents</h2>
+    <ul class="toc">
+        <li><a href="#intro">1. Introduction</a></li>
+        <li><a href="#context">2. Business Context</a></li>
+        <li><a href="#problem">3. Problem Statement</a></li>
+        <li><a href="#data">4. Data</a></li>
+        <li><a href="#plan">5. Plan &amp; Methodology</a></li>
+        <li><a href="#walkthrough">6. Phase-by-Phase Walkthrough</a></li>
+        <li><a href="#dashboard">7. Interactive Dashboard</a></li>
+        <li><a href="#results">8. Results</a></li>
+        <li><a href="#conclusion">9. Conclusion</a></li>
+        <li><a href="#architecture">10. Architecture &amp; Reproducibility</a></li>
+    </ul>
+</div>
+
+<!-- ============================================================ -->
+<div class="card" id="intro">
+    <h2>1. Introduction</h2>
+    <p>
+        This project builds the tools a pricing actuary uses to answer a common question in personal
+        motor insurance: <em>a segment of the book has a Loss Ratio above the rest; should we reprice
+        it, by how much, and what would that do to the business?</em> It follows the full chain such a
+        decision requires: data quality checks, exploratory analysis, frequency and severity modeling
+        (GLM and GAM, compared out of sample), a technical premium, portfolio diagnostics, retention and
+        new-business conversion scenarios, a commercial premium, a repricing scenario engine with a
+        multi-year outlook, and an interactive dashboard.
+    </p>
+    <p>
+        Every segment conclusion is checked on data the models were not fitted on. Two first-pass
+        signals did not survive that check: a large region whose high Loss Ratio came from a few very
+        large claims, and a fuel-type gap that came from a defect in the data file. The segment finally
+        retained shows the same gap in the training, validation and test sets.
+    </p>
+    <div class="kpi-grid">
+        <div class="kpi"><div class="val">14</div><div class="lbl">phases (0 to 13), complete</div></div>
+        <div class="kpi"><div class="val">11</div><div class="lbl">executed notebooks</div></div>
+        <div class="kpi"><div class="val">151</div><div class="lbl">passing unit tests</div></div>
+        <div class="kpi"><div class="val">668,626</div><div class="lbl">policies modeled</div></div>
+        <div class="kpi"><div class="val">9</div><div class="lbl">model cards</div></div>
+        <div class="kpi"><div class="val">3</div><div class="lbl">dashboard pages</div></div>
+    </div>
+</div>
+
+<!-- ============================================================ -->
+<div class="card" id="context">
+    <h2>2. Business Context</h2>
+    <p>
+        A personal motor insurer prices policies with rating factors (driver age, vehicle, location,
+        bonus-malus) to estimate each policy's expected cost, the <strong>technical premium</strong>.
+        Some segments can drift away from their actual risk: a segment that looked adequately priced
+        when the tariff was built can become a source of loss. Finding such a segment, and deciding what
+        to do about it, is routine work for a pricing team. Getting it wrong means either losing money
+        on an under-priced segment or losing customers on an over-priced one.
+    </p>
+    <p>
+        The project reproduces that workflow on a public, single-year cross-section of a French motor
+        third-party-liability book. The dataset has real limits: no charged premium, no expense data, no
+        renewal or quote history. The project states how each gap is handled rather than working around
+        it silently.
+    </p>
+</div>
+
+<!-- ============================================================ -->
+<div class="card" id="problem">
+    <h2>3. Problem Statement</h2>
+    <div class="callout">
+        <strong>The business question:</strong><br>
+        Segment X has a Loss Ratio above the rest of the book. Should we reprice it, by how much, and
+        what would that do to retention, new-business conversion and portfolio profitability?
+    </div>
+    <p>
+        Answering it requires: (1) a reliable estimate of each policy's expected cost (frequency &times;
+        severity), (2) a way to tell a segment that is truly under-priced from one that only has bad
+        luck in its claims, (3) a view of how customers react if the price changes, and (4) a single
+        recommendation that combines the three.
+    </p>
+</div>
+
+<!-- ============================================================ -->
+<div class="card" id="data">
+    <h2>4. Data</h2>
+    <p>
+        <a href="https://www.openml.org/" target="_blank">French Motor Third-Party Liability dataset</a>:
+        <code>freMTPL2freq</code> (OpenML id 41214, one row per policy) and <code>freMTPL2sev</code>
+        (OpenML id 41215, one row per claim payment). One accounting year.
+    </p>
+    <table class="simple">
+        <tr><th>Metric</th><th>Value</th></tr>
+        <tr><td>Policies in the raw file</td><td>678,013</td></tr>
+        <tr><td>Excluded claims-only block (IDpol &le; 24,951)</td><td>9,387 policies</td></tr>
+        <tr><td>Policies modeled</td><td>668,626</td></tr>
+        <tr><td>Reported claims / paid claims (modeled policies)</td><td>26,160 / 26,137</td></tr>
+        <tr><td>Exposure-weighted claim frequency</td><td>7.40% per policy-year</td></tr>
+        <tr><td>Rating factors used</td><td>Driver age, vehicle power/age/brand/fuel, Bonus-Malus, density, region</td></tr>
+        <tr><td>Train / validation / test split</td><td>60% / 20% / 20%, stratified on claim count, at policy level</td></tr>
+    </table>
+    <p>
+        <strong>Why 9,387 policies are excluded.</strong> Every policy at the start of the file, up to
+        IDpol 24,951, carries a reported claim: there is no claim-free policy in that range, the implied
+        frequency is above 200%, and only 3.1% of those claims have a payment in the severity file.
+        Elsewhere, 96% of policies are claim-free and 99.9% of claims are paid. This block is a claims
+        extract, not part of the insured population. Kept, it inflated the modeled frequency without
+        the matching cost, and distorted relativities, fuel type in particular.
+    </p>
+    <p>
+        Loaded and cached by
+        <a href="https://github.com/ldongmon/COMPLETE-AUTO-PRICING-GLM_GAM/blob/main/src/data/load_data.py" target="_blank"><code>src/data/load_data.py</code></a>.
+        Fields and measured data quirks:
+        <a href="https://github.com/ldongmon/COMPLETE-AUTO-PRICING-GLM_GAM/blob/main/docs/data_dictionary.md" target="_blank">data dictionary</a>.
+    </p>
+</div>
+
+<!-- ============================================================ -->
+<div class="card" id="plan">
+    <h2>5. Plan &amp; Methodology</h2>
+    <p>The project follows 14 phases (0 to 13), each building on the previous ones:</p>
+    <div class="arch">
+        <div class="step">0-3<br>Data &amp; Setup</div>
+        <div class="step">4-7<br>Frequency / Severity / Premium</div>
+        <div class="step">8<br>Portfolio Diagnosis</div>
+        <div class="step">9-10<br>Retention / Conversion</div>
+        <div class="step">11<br>Scenario Engine</div>
+        <div class="step">12-13<br>App &amp; Docs</div>
+    </div>
+    <p>
+        Design choices (frequency and severity modeled separately, GLM and GAM run side by side,
+        exposure used only as an offset) are explained in the
+        <a href="https://github.com/ldongmon/COMPLETE-AUTO-PRICING-GLM_GAM/blob/main/docs/PROJECT_ROADMAP.md" target="_blank">project plan</a>.
+        Methods, assumptions, limitations and validation evidence are summarized in the
+        <a href="https://github.com/ldongmon/COMPLETE-AUTO-PRICING-GLM_GAM/blob/main/docs/methodology.md" target="_blank">methodology notes</a>.
+    </p>
+</div>
+
+<!-- ============================================================ -->
+<div class="card" id="walkthrough">
+    <h2>6. Phase-by-Phase Walkthrough</h2>
+    <p>
+        Every notebook below is executed with its outputs; the "Notebook" links open the code and results
+        on GitHub.
+    </p>
+
+    <div class="phase">
+        <h4>Phase 1-2 &middot; Data Quality &amp; Exploratory Analysis
+            <span class="nb-link"><a href="https://github.com/ldongmon/COMPLETE-AUTO-PRICING-GLM_GAM/blob/main/notebooks/01_data_acquisition_and_quality_checks.ipynb" target="_blank">Notebook 01</a> &middot;
+            <a href="https://github.com/ldongmon/COMPLETE-AUTO-PRICING-GLM_GAM/blob/main/notebooks/02_exploratory_data_analysis.ipynb" target="_blank">Notebook 02</a></span>
+        </h4>
+        <p class="q">What data do we have, can we trust it, and which factors move frequency and severity?</p>
+        <p class="finding">
+            The reported claims without payment are not spread across the file: almost all of them sit in
+            a leading claims-only block, which is excluded. Exposure-weighted claim frequency is
+            <strong>7.40%</strong>; the plain average of <code>ClaimNb</code> (3.9%) is a number of claims
+            per policy, not a frequency, because most policies are observed for part of the year.
+            <code>BonusMalus</code> is the strongest frequency factor (5.2% at the bonus floor to 61% above
+            160). <code>Area</code> duplicates <code>Density</code>. Frequency and severity are driven by
+            different factors, which supports modeling them separately.
+        </p>
+    </div>
+
+    <div class="phase">
+        <h4>Phase 3 &middot; Data Preparation &amp; Split
+            <span class="nb-link"><a href="https://github.com/ldongmon/COMPLETE-AUTO-PRICING-GLM_GAM/blob/main/notebooks/03_data_preparation_and_split.ipynb" target="_blank">Notebook 03</a></span>
+        </h4>
+        <p class="q">How do we build a leak-free train/validation/test split?</p>
+        <p class="finding">
+            A 60/20/20 split at policy level, stratified on claim count. Frequency is 7.40-7.41% on the
+            three sets and the median paid claim is EUR 1,172 on all three; mean severity differs only
+            because a few very large claims fell in the validation set.
+        </p>
+    </div>
+
+    <div class="phase">
+        <h4>Phase 4 &middot; Frequency Model: Poisson GLM
+            <span class="nb-link"><a href="https://github.com/ldongmon/COMPLETE-AUTO-PRICING-GLM_GAM/blob/main/notebooks/04_frequency_model_glm.ipynb" target="_blank">Notebook 04</a></span>
+        </h4>
+        <p class="q">What is the expected claim count per policy?</p>
+        <p class="finding">
+            Exposure used as a <code>log</code> offset, never as a feature. Predicted frequency ranks the
+            validation set correctly, from 3.8% in the first decile to 17.9% in the last.
+            <code>DrivAge</code>'s multivariate coefficient is positive while its univariate trend is
+            negative: confounding with <code>BonusMalus</code> (r = -0.48), reported as such.
+        </p>
+    </div>
+
+    <div class="phase gam">
+        <h4>Phase 5 &middot; Frequency Model: GAM Benchmark
+            <span class="nb-link"><a href="https://github.com/ldongmon/COMPLETE-AUTO-PRICING-GLM_GAM/blob/main/notebooks/05_frequency_model_gam.ipynb" target="_blank">Notebook 05</a></span>
+        </h4>
+        <p class="q">Do non-linear effects improve on the linear GLM?</p>
+        <p class="finding">
+            Yes, out of sample: pseudo-R&sup2; 5.49% vs. 4.53%, Gini 0.311 vs. 0.285. The in-sample
+            comparison would have suggested a 2.5x gap and is not used. The partial dependence curves show
+            a <code>DrivAge</code> trough near 30 and a rise after 75, a <code>VehAge</code> plateau up to
+            10 years then a decline, and a concave <code>BonusMalus</code> effect.
+        </p>
+    </div>
+
+    <div class="phase">
+        <h4>Phase 6 &middot; Severity Model: Gamma GLM &amp; GAM
+            <span class="nb-link"><a href="https://github.com/ldongmon/COMPLETE-AUTO-PRICING-GLM_GAM/blob/main/notebooks/06_severity_model_glm_gam.ipynb" target="_blank">Notebook 06</a></span>
+        </h4>
+        <p class="q">How large is a claim, given it happened?</p>
+        <p class="finding">
+            Neither model improves meaningfully on a naive average out of sample (pseudo-R&sup2;: naive
+            -0.11%, GLM -0.09%, GAM +0.04%). The rating factors differentiate claim occurrence, not claim
+            size. Claims above EUR 15,000 are charged as a flat loading of EUR 33.54 per policy-year.
+        </p>
+    </div>
+
+    <div class="phase">
+        <h4>Phase 7 &middot; Technical Premium (GAM-informed Refined GLM)
+            <span class="nb-link"><a href="https://github.com/ldongmon/COMPLETE-AUTO-PRICING-GLM_GAM/blob/main/notebooks/07_technical_premium.ipynb" target="_blank">Notebook 07</a></span>
+        </h4>
+        <p class="q">What is the expected claims cost per policy?</p>
+        <p class="finding">
+            <code>DrivAge</code> (6 bins) and <code>VehAge</code> (4 bins) are re-binned from the GAM
+            curves: validation pseudo-R&sup2; 4.72%, Gini 0.295, while staying a plain GLM rate table. The
+            technical premium reconciles with paid claims on the training set (99.7%) and the test set
+            (98.3%).
+        </p>
+    </div>
+
+    <div class="phase diagnosis">
+        <h4>Phase 8 &middot; Portfolio KPIs: Finding the Segment
+            <span class="nb-link"><a href="https://github.com/ldongmon/COMPLETE-AUTO-PRICING-GLM_GAM/blob/main/notebooks/08_portfolio_kpis.ipynb" target="_blank">Notebook 08</a></span>
+        </h4>
+        <p class="q">Which segment is under-priced, and is the gap real?</p>
+        <p class="finding">
+            A raw Loss Ratio scan flags <code>Region R24</code> (146.7%, 28.5% of exposure); on the
+            attritional layer it is in line with the book (100.8% vs. 100.5%), its raw figure coming from
+            large losses. Fuel type shows no stable gap: Diesel and Regular have the same rate of large
+            claims. The one gap that holds on the training, validation and test sets is
+            <strong><code>BonusMalus</code> 51-80</strong> (28.3% of exposure), which costs 15% to 25%
+            more than its technical premium predicts. Cause: the GLM's straight-line
+            <code>BonusMalus</code> term against a concave effect; with <code>BonusMalus</code> in bands,
+            validation pseudo-R&sup2; rises from 4.72% to 5.28%. Out-of-sample cost relativity:
+            <strong>1.17</strong>.
+        </p>
+    </div>
+
+    <div class="phase">
+        <h4>Phase 9 &middot; Retention (Renewal) Simulator
+            <span class="nb-link"><a href="https://github.com/ldongmon/COMPLETE-AUTO-PRICING-GLM_GAM/blob/main/notebooks/09_retention_model.ipynb" target="_blank">Notebook 09</a></span>
+        </h4>
+        <p class="q">If we reprice the segment, how many existing customers do we lose?</p>
+        <p class="finding">
+            A documented <strong>simulator</strong>, not a fitted model: the dataset has no renewal
+            history. Its tenure input comes from the French bonus-malus formula. At +17%: about 4.8% of
+            the segment's policies (about 10,100) are projected to lapse.
+        </p>
+    </div>
+
+    <div class="phase">
+        <h4>Phase 10 &middot; Conversion (New Business) Simulator
+            <span class="nb-link"><a href="https://github.com/ldongmon/COMPLETE-AUTO-PRICING-GLM_GAM/blob/main/notebooks/10_prospect_conversion_model.ipynb" target="_blank">Notebook 10</a></span>
+        </h4>
+        <p class="q">If we quote above the market, how many prospects still convert?</p>
+        <p class="finding">
+            Lower baseline (15% vs. 88% for renewal) and larger price elasticity. At +17%: conversion
+            falls from 15.0% to 6.0%, assuming competitors price the segment like today's tariff.
+        </p>
+    </div>
+
+    <div class="phase decision">
+        <h4>Phase 11 &middot; Commercial Premium &amp; Scenario Engine
+            <span class="nb-link"><a href="https://github.com/ldongmon/COMPLETE-AUTO-PRICING-GLM_GAM/blob/main/notebooks/11_commercial_premium_and_scenario_engine.ipynb" target="_blank">Notebook 11</a></span>
+        </h4>
+        <p class="q">What correction, and with what effect on profitability?</p>
+        <p class="finding">
+            The commercial loading (37%) covers the 27% expense assumption on a technical premium equal to
+            expected cost; the loading and the scenario engine use the same cost basis, so the whole book
+            at a 0% change has a contribution of zero. At current prices the segment's expected
+            contribution is about EUR -5.7M a year. Over -10% to +30%, contribution improves steadily;
+            the engine's own optimum (+95%) is outside the range its assumptions cover and is not a
+            recommendation. <strong>Indicated correction: +17%</strong>, equal to the measured cost
+            relativity.
+        </p>
+    </div>
+
+    <div class="phase">
+        <h4>Phase 12 &middot; Interactive Streamlit Dashboard</h4>
+        <p class="q">Can a non-technical user run this analysis?</p>
+        <p class="finding">See the next section.</p>
+    </div>
+
+    <div class="phase">
+        <h4>Phase 13 &middot; Documentation
+            <span class="nb-link"><a href="https://github.com/ldongmon/COMPLETE-AUTO-PRICING-GLM_GAM/blob/main/docs/methodology.md" target="_blank">Methodology</a></span>
+        </h4>
+        <p class="q">Are the methods, assumptions and limits written down?</p>
+        <p class="finding">
+            Methodology notes with an assumptions table, the limitations and the validation evidence;
+            one model card per model; a data dictionary.
+        </p>
+    </div>
+</div>
+
+<!-- ============================================================ -->
+<div class="card" id="dashboard">
+    <h2>7. Interactive Dashboard</h2>
+    <p>
+        The models are wired into a three-page Streamlit app. Each numeric input pairs a slider with an
+        exact-value box, so a figure such as <code>BonusMalus = 137</code> can be typed directly.
+    </p>
+    <div class="app-grid">
+        <div class="app-page">
+            <h4>Pricing Simulator</h4>
+            <p>Enter a client's profile (driver age, vehicle, Bonus-Malus, region) and get the technical
+            and commercial premium, broken down into expected frequency, severity and large-loss loading.</p>
+        </div>
+        <div class="app-page">
+            <h4>Retention &amp; Conversion</h4>
+            <p>See how a price change moves an existing customer's renewal probability or a prospect's
+            probability of accepting a quote, with the curve over the whole price range.</p>
+        </div>
+        <div class="app-page">
+            <h4>Portfolio Scenario</h4>
+            <p>Pick a segment (whole book, Bonus-Malus band, fuel type, region or brand) and a price
+            change, and project Loss Ratio, COR, ATP and contribution 1, 2 or 3 years out.</p>
+        </div>
+    </div>
+    <p style="text-align:center; margin-top: 26px;">
+        <a href="https://ldongmon-complete-auto-pricing-glm-gam-appstreamlit-app-jajm0q.streamlit.app/" class="button green" target="_blank">Open the app</a>
+    </p>
+    <p style="font-size: 13.5px; color: #778; text-align:center;">
+        Hosted on a free tier: if the app has not been used for a while, it takes a few seconds to wake
+        up. Design notes are in the
+        <a href="https://github.com/ldongmon/COMPLETE-AUTO-PRICING-GLM_GAM/blob/main/reports/model_cards/streamlit_app.md" target="_blank">app's model card</a>.
+    </p>
+</div>
+
+<!-- ============================================================ -->
+<div class="card" id="results">
+    <h2>8. Results</h2>
+    <div class="callout result">
+        <div class="num">+17%</div>
+        <p style="margin: 6px 0 0;">
+            Indicated correction for <code>BonusMalus</code> 51-80 (28.3% of portfolio exposure), equal
+            to the segment's out-of-sample cost relativity. It brings the segment's expected annual
+            contribution from about EUR -5.7M to about breakeven, with the retention (88.0% to 83.2%) and
+            conversion (15.0% to 6.0%) effects of the simulators.
+        </p>
+    </div>
+    <table class="simple">
+        <tr><th>Segment X (<code>BonusMalus</code> 51-80)</th><th>Current pricing</th><th>+17% correction</th></tr>
+        <tr><td>Renewal rate</td><td>88.0%</td><td>83.2%</td></tr>
+        <tr><td>Conversion rate</td><td>15.0%</td><td>6.0%</td></tr>
+        <tr><td>Segment written premium</td><td>EUR 47.0M</td><td>EUR 47.5M</td></tr>
+        <tr><td><strong>Segment expected annual contribution</strong></td><td><strong>EUR -5.7M</strong></td><td><strong>EUR 0.1M</strong></td></tr>
+    </table>
+    <p style="font-size: 14px; color: #556;">
+        Retention and conversion come from documented simulators; new-business volume assumes as many
+        quotes as current policies. The figures are directional.
+    </p>
+    <div class="callout" id="request-report">
+        <strong>Full PDF report, on request.</strong>
+        The complete written report (methodology, figures, assumptions and limitations) is sent on
+        request by e-mail. Please include your full name, company and job title; the button below
+        opens an e-mail with these fields ready to fill in.
+        <p style="margin: 16px 0 4px;">
+            <a href="#request-report" class="button purple js-request-report">Request the full PDF report</a>
+        </p>
+        <p style="font-size: 13.5px; color: #556; margin: 8px 0 0;">
+            Or write to <span class="js-contact-address">leprince.dongmo [at] yahoo [dot] fr</span>.
+        </p>
+    </div>
+</div>
+
+<!-- ============================================================ -->
+<div class="card" id="conclusion">
+    <h2>9. Conclusion</h2>
+    <p>
+        <code>BonusMalus</code> 51-80 should be repriced by about <strong>+17%</strong>. In tariff terms,
+        this is a correction of the <code>BonusMalus</code> relativity for that band, and the next tariff
+        revision should model <code>BonusMalus</code> in bands rather than as a straight line. The
+        conclusion rests on a gap measured on data the models were not fitted on, after ruling out a
+        region whose Loss Ratio came from large losses and a fuel-type gap that came from a defect in the
+        data file.
+    </p>
+    <p>
+        The retention and conversion effects come from simulators calibrated on literature values, not
+        on observed price response, which this dataset cannot support. The correction would be applied
+        with a test-and-learn cell, and the simulators recalibrated on the observed experience. The
+        Streamlit app lets a pricing team run the same analysis on another segment or another price
+        change without touching the code.
+    </p>
+</div>
+
+<!-- ============================================================ -->
+<div class="card" id="architecture">
+    <h2>10. Architecture &amp; Reproducibility</h2>
+    <pre style="background:#0d1b2a; color:#d6e4f0; padding:20px; border-radius:8px; overflow-x:auto; font-size:13px; line-height:1.5;">
+notebooks/   analysis, one notebook per stage (11, all executed)
+src/         code shared by the notebooks and the app
+  data/      OpenML loader, claims-only block detection
+  eda/       exposure-weighted profiling
+  features/  encoding and train/validation/test split
+  models/    GLM/GAM training and diagnostics
+  pricing/   portfolio KPIs, Segment X, commercial premium
+  retention/ renewal simulator
+  prospect/  conversion simulator
+scoring/     technical premium scoring and scenario engine
+app/         3-page Streamlit dashboard
+tests/       151 pytest unit tests
+docs/        methodology, data dictionary, project plan
+reports/     model cards (9) and exported tables</pre>
+
+    <div class="stack-tags">
+        <span class="tag">Python</span>
+        <span class="tag">statsmodels (GLM)</span>
+        <span class="tag">pygam (GAM)</span>
+        <span class="tag">pandas / numpy</span>
+        <span class="tag">scikit-learn</span>
+        <span class="tag">Streamlit</span>
+        <span class="tag">pytest</span>
+        <span class="tag">Jupyter</span>
+        <span class="tag">Git</span>
+    </div>
+
+    <h3 style="margin-top: 28px;">Run it yourself</h3>
+    <pre style="background:#eef3fb; padding:16px; border-radius:8px; overflow-x:auto; font-size:13.5px;">git clone https://github.com/ldongmon/COMPLETE-AUTO-PRICING-GLM_GAM.git
+cd COMPLETE-AUTO-PRICING-GLM_GAM
+python -m venv .venv &amp;&amp; source .venv/bin/activate  # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+streamlit run app/streamlit_app.py</pre>
+
+    <p style="text-align:center; margin-top: 26px;">
+        <a href="https://github.com/ldongmon/COMPLETE-AUTO-PRICING-GLM_GAM" class="button" target="_blank">Source on GitHub</a>
+        <a href="https://github.com/ldongmon/COMPLETE-AUTO-PRICING-GLM_GAM/blob/main/README.md" class="button secondary" target="_blank">README</a>
+    </p>
+</div>
+
+</div>
+
+<footer>
+    <p>&copy; 2026 &middot; Auto Insurance Pricing &amp; Retention Engine &middot; Leprince Dongmo Nanda</p>
+    <p><a href="https://github.com/ldongmon" target="_blank">GitHub</a> &middot; Actuary / Pricing Data Scientist</p>
+</footer>
+
+<script>
+    // The address is assembled in the browser so that it does not appear in plain text in the page source.
+    (function () {
+        var address = ["leprince.dongmo", "yahoo.fr"].join("@");
+        var subject = "Request: Auto Insurance Pricing report (PDF)";
+        var body = "Hello,\n\nI would like to receive the full PDF report of the Auto Insurance Pricing & Retention Engine project.\n\n"
+            + "Full name:\nCompany / organisation:\nJob title:\nLinkedIn profile (optional):\nReason for the request:\n";
+        var href = "mailto:" + address + "?subject=" + encodeURIComponent(subject) + "&body=" + encodeURIComponent(body);
+        document.querySelectorAll(".js-request-report").forEach(function (link) { link.href = href; });
+        document.querySelectorAll(".js-contact-address").forEach(function (span) {
+            var a = document.createElement("a");
+            a.href = "mailto:" + address;
+            a.textContent = address;
+            span.replaceWith(a);
+        });
+    })();
+</script>
+
+</body>
+</html>

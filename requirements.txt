@@ -1,0 +1,47 @@
+# =============================================================================
+# requirements.txt: Auto Insurance Pricing & Retention project
+# =============================================================================
+# Pinned to the exact versions this project was built and tested against
+# (generated with `pip freeze` after installation: see docs/PROJECT_ROADMAP.md
+# Phase 0). Pinning matters here: statsmodels' GLM API and pygam's spline
+# fitting have both changed behaviour across versions in the past, and a
+# pricing model that silently refits differently between two library versions
+# is exactly the kind of thing a model review would
+# flag. Recreate the environment with:
+#
+#   python -m venv .venv
+#   .venv\Scripts\activate      (Windows)  /  source .venv/bin/activate (macOS/Linux)
+#   pip install -r requirements.txt
+# =============================================================================
+
+# --- Core data handling ---
+pandas==3.0.5
+numpy==2.5.2
+scipy==1.16.3
+
+# --- Data acquisition (freMTPL2freq / freMTPL2sev live on OpenML) ---
+scikit-learn==1.9.0
+openml==0.15.1
+
+# --- Statistical / actuarial modeling ---
+statsmodels==0.14.6   # Poisson & Gamma GLM with exposure offset, deviance, AIC: the pricing workhorse
+pygam==0.12.0          # Generalized Additive Models: smooth (non-linear) risk factor effects
+
+# --- Visualization ---
+matplotlib==3.11.1
+seaborn==0.13.2
+plotly==7.0.0          # interactive charts, reused inside the Streamlit app
+
+# --- Notebooks ---
+jupyterlab==4.6.3
+ipykernel==7.3.0
+nbconvert==7.17.1      # lets us execute notebooks headlessly and keep real outputs in git history
+
+# --- Model persistence ---
+joblib==1.5.3
+
+# --- App ---
+streamlit==1.62.0
+
+# --- Testing (src/ code is unit-tested) ---
+pytest==9.1.1
