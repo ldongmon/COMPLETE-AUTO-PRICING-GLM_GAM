@@ -78,3 +78,25 @@ jupyter nbconvert --to notebook --execute --inplace notebooks/08_portfolio_kpis.
 
 Requires `data/processed/policy_level_clean.parquet` (Phase 1), the train/val/test files (Phase 3) and
 the Phase 7 model artifacts.
+
+## Worked example: the cost relativity of Segment X = 1.1842 / 1.0155 = 1.166
+
+**The group.** Not one policy but a group: every policy with BonusMalus 51 to 80, on the data the model
+did not see (validation + test). The question: does this group cost more than its premium, compared with
+the rest of the portfolio?
+
+| Step | Segment X | Book | Where it comes from |
+|---|---|---|---|
+| Claims capped at EUR 15,000 | EUR 5,988,212 | EUR 16,643,671 | column `sev_claim_amount`, each claim up to EUR 15,000 |
+| + EUR 33.54 x years insured | EUR 1,343,494 | EUR 4,744,650 | flat large-loss loading (notebook 06), column `Exposure` |
+| Earned premium | EUR 6,191,086 | EUR 21,062,209 | technical premium (notebook 07) x `Exposure` |
+| Cost / premium | (5,988,212 + 1,343,494) / 6,191,086 = **1.1842** | (16,643,671 + 4,744,650) / 21,062,209 = **1.0155** | the three lines above |
+
+**Result.** Cost relativity = 1.1842 / 1.0155 = **1.166**, indicated price change **+17%**.
+
+**Reading.** The segment costs 1.1842 times its premium, the book 1.0155 times. Relative to the book, the
+segment costs 1.166 times more: its premium is about 17% too low, hence +17%. Large claims are replaced
+by the flat EUR 33.54 per year (mutualisation), so a EUR 4M claim that fell in the group by chance does
+not distort the measure. After +17%, the segment costs 1.012 times its premium, in line with the book.
+Notebook 08 shows three policies of the segment (IDpol 24956, 24976, 24980) highlighted in the dataset,
+with their corrected premiums.

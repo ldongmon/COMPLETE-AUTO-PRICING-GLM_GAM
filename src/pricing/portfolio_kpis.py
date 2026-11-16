@@ -1,86 +1,70 @@
 """
 portfolio_kpis.py
-==================
-Phase 8: portfolio-level and segment-level KPIs built on top of the Phase 7
-technical premium: Loss Ratio, Combined Operating Ratio (COR), Average
-Technical Premium (ATP). This is where the project's original business
-question, *"Segment X has a Loss Ratio above the rest of the book. Should
-we reprice it?"*, becomes a computed number, cut by every rating factor.
+=================
+Phase 8: the portfolio indicators, and the search for a mispriced segment.
 
-WHERE "EARNED PREMIUM" COMES FROM (A LIMITATION)
+THE INDICATORS
+--------------
+    earned premium   = technical premium (per year) x exposure (years insured)
+    Loss Ratio (LR)  = sum of the claims paid / sum of the earned premiums
+    COR              = LR + expense ratio (27%, an assumption)
+    ATP              = average technical premium per policy (per year)
+
+Example: a policy priced EUR 200 a year, insured 6 months, earns 200 x 0.5 =
+EUR 100. If it had a EUR 150 claim, its own LR is 150%.
+
+Always SUM then DIVIDE: LR of a group = sum(claims) / sum(premiums), never the
+average of each policy's own LR (a policy that earned EUR 5 and had one claim
+would have an LR of thousands of percent and drown everything else).
+
+WHERE THE "PREMIUM" COMES FROM (a limit of the data)
 ----------------------------------------------------
-freMTPL2 has no historical premium actually charged: only claims and risk
-factors (Phase 1). There is no way around this; it is a property of the
-dataset, not something to work around cleverly. The premium used here is the
-Phase 7 **technical premium** itself, prorated to each policy's observed
-exposure. This has a specific, defensible interpretation: it treats the
-portfolio as if it were priced *exactly* at technical cost, with no margin.
-Loss Ratio computed this way is not "how much profit did we make" (that
-needs a real charged premium, which doesn't exist here): it is **"how well
-does the model's own prediction match what actually happened, in aggregate
-and by segment."** That is still a useful diagnostic: an LR far
-from 100% for a specific segment means the model is *mis-pricing* that
-segment relative to its own overall calibration, which is exactly the kind
-of signal that would prompt a "should we reprice Segment X" conversation.
+freMTPL2 has no premium actually charged. The premium used here is the
+Phase 7 technical premium itself. So an LR of 100% means "the claims are
+exactly what the model expected", and an LR far from 100% for one segment
+means the model misprices that segment compared with the rest of the book.
+The expense ratio (27%) is not in the data either: it is an assumption in the
+usual range for French personal motor.
 
-WHY THE EXPENSE RATIO IS A FLAT ASSUMPTION
-------------------------------------------------
-No expense data exists in this dataset either. `DEFAULT_EXPENSE_RATIO`
-(27%) is a documented, illustrative assumption in line with commonly-cited
-expense ratios for French personal motor lines (acquisition + administration
-costs), not fitted from data, and stated as an assumption everywhere it's
-used, per standard actuarial disclosure practice.
+TWO LAYERS OF CLAIMS (see Phase 6)
+----------------------------------
+For each policy, with T = EUR 15,000 per claim:
 
-WHY EVERY RATIO IS EXPOSURE/PREMIUM-WEIGHTED (SUMMED), NEVER AVERAGED PER POLICY
--------------------------------------------------------------------------------------
-Same discipline as Phase 2's frequency lesson: `mean(policy-level ratio)` is
-dominated by tiny-premium policies with wild individual ratios (a policy
-earning EUR 5 of premium with any claim at all has an ostronomical
-"loss ratio" that says nothing about the segment). The correct estimator
-sums numerator and denominator separately across the group, then divides.
-`sum(claims) / sum(premium)`, not `mean(claims / premium)`.
+    capped claims       = min(total paid, T x number of claims)   the attritional layer
+    large-loss excess   = total paid - capped claims              the large-loss layer
+    attritional premium = frequency x average cost x exposure     what the model expects for the attritional layer
+
+The large-loss layer is paid by the flat loading (EUR 33.54 per year,
+mutualised). A segment must therefore be judged on its ATTRITIONAL layer:
+
+    attritional A/E (actual / expected) = sum(capped claims) / sum(attritional premium)
+
+and compared with the A/E of the whole book (A/E relative to the book; 1.00 =
+priced like the rest).
 """
 
-from __future__ import annotations
+import pandas as pd  # tables
 
-import pandas as pd
+DEFAULT_EXPENSE_RATIO = 0.27  # assumption: acquisition + administration costs, 27% of the premium
 
-DEFAULT_EXPENSE_RATIO = 0.27  # see module docstring: an assumption, not a fitted value
-
-EXPOSURE_COL = "Exposure"
-INCURRED_CLAIMS_COL = "sev_claim_amount"  # Phase 1: actual total paid EUR per policy (0 if no claim)
-TECHNICAL_PREMIUM_COL = "technical_premium"  # Phase 7: annualized EUR / policy-year
+EXPOSURE_COL = "Exposure"  # years insured
+INCURRED_CLAIMS_COL = "sev_claim_amount"  # total paid per policy (0 if no claim)
+TECHNICAL_PREMIUM_COL = "technical_premium"  # EUR per year (Phase 7)
 
 
-def add_earned_premium(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    `technical_premium` (Phase 7) is an annualized, per-policy-*year* rate.
-    "Earned premium" for a specific historical policy is that rate prorated
-    to however long the policy was actually observed: exactly analogous to
-    how `ClaimNb_freq_target`'s offset (`log(Exposure)`) prorates expected
-    claim count. Adds an `earned_premium` column; does not mutate `df`.
-    """
+def add_earned_premium(df):
+    """Adds earned_premium = technical premium x exposure (a copy, df is not changed)."""
     out = df.copy()
-    out["earned_premium"] = out[TECHNICAL_PREMIUM_COL] * out[EXPOSURE_COL]
+    out["earned_premium"] = out[TECHNICAL_PREMIUM_COL] * out[EXPOSURE_COL]  # premium for the time actually insured
     return out
 
 
-def compute_kpis(df: pd.DataFrame, expense_ratio: float = DEFAULT_EXPENSE_RATIO) -> dict:
-    """
-    Portfolio- (or segment-, if `df` is already filtered) level KPIs.
-    `df` must already have `earned_premium` (see `add_earned_premium`).
-
-    Returns a dict: n_policies, total_exposure, total_earned_premium,
-    total_incurred_claims, loss_ratio, expense_ratio, cor, atp.
-    """
-    total_exposure = df[EXPOSURE_COL].sum()
-    total_earned_premium = df["earned_premium"].sum()
-    total_incurred_claims = df[INCURRED_CLAIMS_COL].sum()
-
-    loss_ratio = total_incurred_claims / total_earned_premium
-    cor = loss_ratio + expense_ratio
-    atp = df[TECHNICAL_PREMIUM_COL].mean()  # average ANNUALIZED rate per policy, not prorated
-
+def compute_kpis(df, expense_ratio=DEFAULT_EXPENSE_RATIO):
+    """LR, COR and ATP of a group of policies (the whole book or one segment)."""
+    total_exposure = df[EXPOSURE_COL].sum()  # years insured
+    total_earned_premium = df["earned_premium"].sum()  # premiums earned
+    total_incurred_claims = df[INCURRED_CLAIMS_COL].sum()  # claims paid
+    loss_ratio = total_incurred_claims / total_earned_premium  # sum of claims / sum of premiums
     return {
         "n_policies": len(df),
         "total_exposure": total_exposure,
@@ -88,55 +72,90 @@ def compute_kpis(df: pd.DataFrame, expense_ratio: float = DEFAULT_EXPENSE_RATIO)
         "total_incurred_claims": total_incurred_claims,
         "loss_ratio": loss_ratio,
         "expense_ratio": expense_ratio,
-        "cor": cor,
-        "atp": atp,
+        "cor": loss_ratio + expense_ratio,  # combined ratio
+        "atp": df[TECHNICAL_PREMIUM_COL].mean(),  # average premium per year (not prorated)
     }
 
 
-def kpis_by_segment(df: pd.DataFrame, segment_col: str, expense_ratio: float = DEFAULT_EXPENSE_RATIO) -> pd.DataFrame:
+def kpis_by_segment(df, segment_col, expense_ratio=DEFAULT_EXPENSE_RATIO):
     """
-    `compute_kpis`, one row per level of `segment_col`, plus `exposure_share`
-    (each segment's share of total portfolio exposure): essential for
-    judging *materiality*: a dramatic Loss Ratio backed by 0.1% of the book
-    is a very different conversation than one backed by 15% of it (the same
-    caution Phase 2's EDA applied to univariate rating-factor charts).
+    compute_kpis for each level of `segment_col`, with exposure_share = the
+    level's share of the book's exposure (a high LR on 0.1% of the book matters
+    much less than on 15% of it). Sorted from the worst LR to the best.
     """
-    total_exposure = df[EXPOSURE_COL].sum()
+    total_exposure = df[EXPOSURE_COL].sum()  # exposure of the whole book
     rows = []
-    for level, group in df.groupby(segment_col, observed=True):
+    for level, group in df.groupby(segment_col, observed=True):  # one group per level
         kpis = compute_kpis(group, expense_ratio=expense_ratio)
         kpis[segment_col] = level
-        kpis["exposure_share"] = kpis["total_exposure"] / total_exposure
+        kpis["exposure_share"] = kpis["total_exposure"] / total_exposure  # size of the segment
         rows.append(kpis)
-
     result = pd.DataFrame(rows)
-    cols = [segment_col, "n_policies", "exposure_share"] + [
-        c for c in result.columns if c not in (segment_col, "n_policies", "exposure_share")
-    ]
-    return result[cols].sort_values("loss_ratio", ascending=False).reset_index(drop=True)
+    first = [segment_col, "n_policies", "exposure_share"]  # columns shown first
+    result = result[first + [c for c in result.columns if c not in first]]
+    return result.sort_values("loss_ratio", ascending=False).reset_index(drop=True)
 
 
-def experience_cost_factor(group_df: pd.DataFrame, large_loss_threshold: float) -> float:
+def add_claim_layers(df, threshold):
     """
-    Expected claims cost of `group_df`, as a multiple of its technical premium.
-
-    The attritional layer (each claim capped at `large_loss_threshold`) is
-    taken from the group's own experience. The large-loss layer is charged at
-    the flat loading already in the technical premium (`large_loss_loading`,
-    Phase 6), because large losses are too sparse and too volatile to
-    attribute to a segment (Phase 8):
-
-        cost   = capped claims of the group + large_loss_loading x exposure
-        factor = cost / earned technical premium of the group
-
-    A segment's cost relativity is its factor divided by the book's factor,
-    computed on the same data.
-
-    Required columns: Exposure, sev_claim_amount, sev_claim_count,
-    technical_premium, large_loss_loading.
+    Adds the two layers of each policy's claims (a copy, df is not changed):
+      capped_claims       min(total paid, threshold x number of claims)
+      large_loss_excess   total paid - capped_claims
+      attritional_premium frequency x average cost x exposure
     """
-    cap = large_loss_threshold * group_df["sev_claim_count"].clip(lower=1)
-    capped = group_df[INCURRED_CLAIMS_COL].clip(upper=cap).sum()
-    large = (group_df["large_loss_loading"] * group_df[EXPOSURE_COL]).sum()
-    earned = (group_df[TECHNICAL_PREMIUM_COL] * group_df[EXPOSURE_COL]).sum()
+    out = df.copy()
+    cap = threshold * out["sev_claim_count"].clip(lower=1)  # the cap grows with the number of claims
+    out["capped_claims"] = out[INCURRED_CLAIMS_COL].clip(upper=cap)  # attritional layer
+    out["large_loss_excess"] = out[INCURRED_CLAIMS_COL] - out["capped_claims"]  # large-loss layer
+    out["attritional_premium"] = out["predicted_frequency"] * out["predicted_severity"] * out[EXPOSURE_COL]  # expected attritional cost
+    return out
+
+
+def attritional_ae(df):
+    """Actual / expected on the attritional layer: sum(capped claims) / sum(attritional premium)."""
+    return df["capped_claims"].sum() / df["attritional_premium"].sum()
+
+
+def attritional_ae_table(df, col):
+    """
+    For each level of `col`: its share of exposure, its number of paid claims,
+    and its attritional A/E divided by the book's A/E, on three sets of data:
+    all data, the validation set only, the test set only (column `split`).
+    A real pricing gap shows on all three; noise changes direction.
+    """
+    book = {
+        "all": attritional_ae(df),  # A/E of the whole book
+        "val": attritional_ae(df[df["split"] == "val"]),  # same, validation set
+        "test": attritional_ae(df[df["split"] == "test"]),  # same, test set
+    }
+    rows = []
+    for level, group in df.groupby(col, observed=True):  # one row per level
+        row = {
+            col: level,
+            "exposure_share": group[EXPOSURE_COL].sum() / df[EXPOSURE_COL].sum(),
+            "paid_claims": int(group["sev_claim_count"].sum()),
+            "AE_all": attritional_ae(group) / book["all"],
+            "AE_val": attritional_ae(group[group["split"] == "val"]) / book["val"],
+            "AE_test": attritional_ae(group[group["split"] == "test"]) / book["test"],
+        }
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def experience_cost_factor(group_df, large_loss_threshold):
+    """
+    What a group of policies really costs, as a multiple of its technical premium:
+
+        cost   = its own capped claims + flat loading x its exposure
+        factor = cost / its earned technical premium
+
+    The attritional layer comes from the group's own experience; the
+    large-loss layer is charged at the flat loading (mutualised), never at the
+    group's own large claims. A segment's cost relativity is its factor divided
+    by the book's factor (both on the same data).
+    """
+    cap = large_loss_threshold * group_df["sev_claim_count"].clip(lower=1)  # cap per policy
+    capped = group_df[INCURRED_CLAIMS_COL].clip(upper=cap).sum()  # attritional claims of the group
+    large = (group_df["large_loss_loading"] * group_df[EXPOSURE_COL]).sum()  # mutualised large-loss charge
+    earned = (group_df[TECHNICAL_PREMIUM_COL] * group_df[EXPOSURE_COL]).sum()  # earned technical premium
     return float((capped + large) / earned)

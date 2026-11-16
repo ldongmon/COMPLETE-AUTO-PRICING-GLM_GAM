@@ -1,80 +1,70 @@
 """
 score_technical_premium.py
-============================
-Phase 7: the single, unified scoring pipeline: raw policy features in,
-technical premium out. Every notebook (and, later, the Streamlit app)
-calls this rather than re-implementing the frequency x severity + large-loss
-combination separately: the same "one source of truth" discipline this
-project has followed since `src/data/load_data.py` in Phase 1.
+==========================
+Phase 7: the technical premium of any policy, in one function used by the
+notebooks and by the app.
 
-WHAT "TECHNICAL PREMIUM" MEANS HERE
----------------------------------------
-The **annualized, per-policy-year** expected claim cost:
+THE FORMULA
+-----------
+For one policy, per year of insurance:
 
-    technical_premium = predicted_frequency (claims / policy-year)
-                       x predicted_severity (EUR / claim)
-                       + large_loss_loading (EUR / policy-year, flat: Phase 6)
+    technical premium = expected frequency x expected average cost + large-loss loading
 
-This is the actuarially fair rate for a *full year* of the risk: the
-quantity a pricing table is actually built from, not the expected cost for
-whatever partial period a specific historical policy happened to be
-observed. To reconcile against a historical policy's *actual* observed
-exposure period (e.g. for the validation diagnostics later in this
-notebook), multiply by that policy's `Exposure`.
+    expected frequency    = exp(b0 + sum of b_j x_j)   from the refined frequency GLM
+    expected average cost = exp(c0 + sum of c_k x_k)   from the severity GLM (attritional layer)
+    large-loss loading    = EUR 33.54                   the same for everybody (Phase 6)
 
-WHY predicted_frequency USES offset=0, NOT log(Exposure)
---------------------------------------------------------------
-The frequency GLM (`src/models/frequency_glm_refined.py`) was *fit* with
-`offset = log(Exposure)`, because during fitting each policy's observed
-claim count does scale with how long it was on risk. But once
-fitted, asking "what's this policy's expected frequency for a full year"
-means evaluating the model at `Exposure = 1`, i.e. `log(Exposure) = 0`: a
-zero offset at prediction time, every time, regardless of any individual
-policy's actual observed exposure.
+The frequency is computed for a FULL year (offset log(1) = 0), whatever the
+policy's actual exposure: a premium is quoted per year. To compare with the
+claims of a policy observed for part of a year, multiply by its exposure.
+
+Hand calculation example (IDpol 1006850 of the validation set, notebook 07:
+DrivAge 24, BonusMalus 95, VehPower 9, Density 1,185, B12, Regular, R42):
+    eta_freq = b0 + ... = -2.1126  ->  frequency = exp(-2.1126) = 0.1209 claims per year
+    eta_sev  = c0 + ... =  7.0917  ->  average cost = exp(7.0917) = EUR 1,201.98
+    technical premium    = 0.1209 x 1,201.98 + 33.54 = EUR 178.88 per year
+
+TWO WAYS TO LOAD THE MODELS
+---------------------------
+  TechnicalPremiumModel.load(models_dir)       the full statsmodels results (notebooks)
+  TechnicalPremiumModel.load_lite(models_dir)  coefficient-only copies in models/app/ (the app)
+Both give exactly the same premiums.
 """
 
-from __future__ import annotations
+from pathlib import Path  # file paths
 
-from dataclasses import dataclass
-from pathlib import Path
-
-import joblib
-import numpy as np
-import pandas as pd
-import statsmodels.api as sm
+import joblib  # loads the saved models
+import numpy as np  # maths
+import pandas as pd  # tables
+import statsmodels.api as sm  # adds the intercept column
 
 
-@dataclass
 class TechnicalPremiumModel:
-    """Bundles every fitted artifact `score_technical_premium` needs, loaded once."""
+    """The five pieces needed to price a policy, loaded once."""
 
-    freq_results: object  # fitted statsmodels GLMResults: refined frequency GLM (Phase 7)
-    freq_encoder: object  # fitted RefinedFeatureEncoder (Phase 7)
-    sev_results: object  # fitted statsmodels GLMResults: severity GLM (Phase 6)
-    sev_encoder: object  # fitted PolicyFeatureEncoder (Phase 3): severity was built on this encoding
-    large_loss_loading: float  # EUR per policy-year, flat (Phase 6)
-
-    @classmethod
-    def load(cls, models_dir: Path) -> "TechnicalPremiumModel":
-        """Loads the full research artifacts (statsmodels results objects, ~200MB): for notebooks."""
-        return cls._load_from(models_dir)
+    def __init__(self, freq_results, freq_encoder, sev_results, sev_encoder, large_loss_loading):
+        self.freq_results = freq_results  # refined frequency GLM (its coefficients b)
+        self.freq_encoder = freq_encoder  # builds the frequency GLM's columns (with the age bands)
+        self.sev_results = sev_results  # severity GLM (its coefficients c)
+        self.sev_encoder = sev_encoder  # builds the severity GLM's columns (Phase 3 encoder)
+        self.large_loss_loading = large_loss_loading  # EUR per year, flat
 
     @classmethod
-    def load_lite(cls, models_dir: Path) -> "TechnicalPremiumModel":
-        """
-        Loads the distilled, deployment-sized artifacts from `models_dir / "app"` (see
-        `src/models/lightweight_glm.py` and `scripts/distill_app_models.py`): a few hundred KB
-        total instead of ~200MB, for the Streamlit app (Phase 12) and any other deployment context.
-        `LightweightGLM` is a drop-in replacement for a real `GLMResults` object here: every line of
-        `score_technical_premium` below runs identically regardless of which `load*` was used.
-        """
-        return cls._load_from(models_dir / "app")
+    def load(cls, models_dir):
+        """Full models, from models/ (used by the notebooks)."""
+        return cls.load_from_folder(Path(models_dir))
 
     @classmethod
-    def _load_from(cls, artifact_dir: Path) -> "TechnicalPremiumModel":
-        freq = joblib.load(artifact_dir / "freq_glm_refined.pkl")
-        sev = joblib.load(artifact_dir / "sev_glm.pkl")
-        sev_encoder = joblib.load(artifact_dir / "feature_encoder.joblib")
+    def load_lite(cls, models_dir):
+        """Coefficient-only models, from models/app/ (used by the app)."""
+        return cls.load_from_folder(Path(models_dir) / "app")
+
+    @classmethod
+    def load_from_folder(cls, folder):
+        """Read the three saved files of a folder."""
+        freq = joblib.load(folder / "freq_glm_refined.pkl")  # refined frequency GLM + its encoder
+        sev = joblib.load(folder / "sev_glm.pkl")  # severity GLM + large-loss loading
+        sev_encoder = joblib.load(folder / "feature_encoder.joblib")  # Phase 3 encoder, used by the severity GLM
         return cls(
             freq_results=freq["results"],
             freq_encoder=freq["encoder"],
@@ -83,42 +73,35 @@ class TechnicalPremiumModel:
             large_loss_loading=sev["large_loss_loading"],
         )
 
+    _load_from = load_from_folder  # older name, kept for existing code
 
-def score_technical_premium(df: pd.DataFrame, model: TechnicalPremiumModel) -> pd.DataFrame:
+
+def score_technical_premium(df, model):
     """
-    Score a table of raw policy features (any DataFrame with the columns
-    `PolicyFeatureEncoder`/`RefinedFeatureEncoder` expect: see Phase 3/7) into
-    a per-policy-year technical premium. Works identically whether `df` is a
-    slice of the known dataset (for validation) or a brand-new hypothetical
-    policy (for the eventual pricing app): the whole point of routing every
-    caller through one function.
+    Technical premium of every policy of `df` (one row per policy).
 
-    Returns a DataFrame (same row index as `df`) with columns:
-      - predicted_frequency  : claims per policy-year
-      - predicted_severity   : EUR per claim
-      - large_loss_loading   : EUR per policy-year (flat, same value every row)
-      - technical_premium    : EUR per policy-year (the headline output)
+    Returns a table with, for each policy:
+      predicted_frequency  claims per year            exp(b0 + sum b_j x_j)
+      predicted_severity   EUR per claim              exp(c0 + sum c_k x_k)
+      large_loss_loading   EUR per year (flat)        33.54
+      technical_premium    EUR per year               frequency x severity + loading
     """
-    # --- Frequency: refined GLM, evaluated at a full policy-year (offset = 0) ---
-    X_freq = model.freq_encoder.transform(df)
-    X_freq_const = sm.add_constant(X_freq, has_constant="add")
-    zero_offset = np.zeros(len(df))
-    predicted_frequency = model.freq_results.predict(X_freq_const, offset=zero_offset)
+    # 1. Frequency: refined GLM, for a full year (offset = log(1) = 0).
+    X_freq = sm.add_constant(model.freq_encoder.transform(df), has_constant="add")  # columns + intercept
+    frequency = model.freq_results.predict(X_freq, offset=np.zeros(len(df)))  # exp(b0 + sum b_j x_j)
 
-    # --- Severity: Gamma GLM (Phase 6), no offset: severity has none ---
-    X_sev_full = model.sev_encoder.transform(df)
-    sev_feature_cols = list(model.sev_results.model.exog_names[1:])  # drop 'const'
-    X_sev_const = sm.add_constant(X_sev_full[sev_feature_cols], has_constant="add")
-    predicted_severity = model.sev_results.predict(X_sev_const)
+    # 2. Severity: Gamma GLM, on the columns it was fitted with.
+    X_sev_all = model.sev_encoder.transform(df)  # every Phase 3 column
+    sev_columns = list(model.sev_results.model.exog_names[1:])  # the columns kept in the severity GLM (without "const")
+    X_sev = sm.add_constant(X_sev_all[sev_columns], has_constant="add")  # columns + intercept
+    severity = model.sev_results.predict(X_sev)  # exp(c0 + sum c_k x_k)
 
-    technical_premium = predicted_frequency * predicted_severity + model.large_loss_loading
+    # 3. Technical premium = frequency x severity + flat large-loss loading.
+    premium = frequency * severity + model.large_loss_loading
 
-    return pd.DataFrame(
-        {
-            "predicted_frequency": np.asarray(predicted_frequency),
-            "predicted_severity": np.asarray(predicted_severity),
-            "large_loss_loading": model.large_loss_loading,
-            "technical_premium": np.asarray(technical_premium),
-        },
-        index=df.index,
-    )
+    return pd.DataFrame({
+        "predicted_frequency": np.asarray(frequency),
+        "predicted_severity": np.asarray(severity),
+        "large_loss_loading": model.large_loss_loading,
+        "technical_premium": np.asarray(premium),
+    }, index=df.index)

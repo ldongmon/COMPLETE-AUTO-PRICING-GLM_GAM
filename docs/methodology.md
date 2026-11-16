@@ -1,11 +1,13 @@
 # Methodology Notes: Auto Insurance Pricing & Retention Engine
 
 **Prepared by:** Dongmo Nanda, Actuary / Pricing Data Scientist
-**Date:** 2026-11-12
+**Date:** 2026-11-16
 
 A single reference for the scope, data, methods, assumptions, limitations and validation of the
 project. Worked numbers are in the notebooks (`notebooks/01` to `11`) and the model cards
-(`reports/model_cards/`).
+(`reports/model_cards/`). Every important figure is also calculated by hand in the notebooks, on real
+policies identified by their `IDpol` and shown inside the dataset, with the origin of each number stated
+(dataset column, fitted coefficient or assumption).
 
 ---
 
@@ -96,7 +98,17 @@ the test set. Gini against actual claim cost: 0.580 (0.556 with the original GLM
 
 ### 4.4 Portfolio KPIs and Segment X
 
-Ratios are always `sum(claims) / sum(premium)`, never averaged per policy. A raw Loss Ratio scan flags
+Ratios are always `sum(claims) / sum(premium)`, never averaged per policy.
+
+**The portfolio Loss Ratio problem.** On all data, paid claims are 112.7% of the technical premium.
+Split by data set, the ratio is 99.7% on train, 98.3% on test and 165.7% on validation: the problem sits
+in one set. Split into layers, the attritional Loss Ratio is close to 100% everywhere (validation
+102.6%); the validation set's large losses cost EUR 128 per policy-year against EUR 33.54 charged,
+because the largest claims of the dataset (EUR 4.08M among them) fell there. Treatment: large losses
+are mutualised, i.e. replaced by the flat loading for every group; the portfolio ratio is then 100.4%.
+The same rule is applied to every segment.
+
+A raw Loss Ratio scan flags
 `Region` R24 (146.7%, 28.5% of exposure); on the attritional layer it is in line with the book (100.8%
 vs. 100.5%), its raw figure coming from large losses including the largest claim in the dataset.
 
@@ -183,7 +195,7 @@ conditions, not a forecast).
 | Split is unbiased | Frequency 7.40-7.41% and median severity EUR 1,172 on all three sets | [`03_data_preparation_and_split.ipynb`](../notebooks/03_data_preparation_and_split.ipynb) |
 | Loading and engine share one cost basis | Whole book at 0% change: contribution 0 (notebook check and unit test) | [`scenario_engine.md`](../reports/model_cards/scenario_engine.md) |
 | App scoring matches the notebooks | Exact-match unit test on the coefficient-only models | [`streamlit_app.md`](../reports/model_cards/streamlit_app.md) |
-| Code | 151 unit tests passing (`pytest tests/`) | [`tests/`](../tests/) |
+| Code | 154 unit tests passing (`pytest tests/`) | [`tests/`](../tests/) |
 
 ## 8. Result
 

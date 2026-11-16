@@ -1,65 +1,54 @@
 """
 frequency_glm.py
-=================
-Phase 4: fits the frequency model: a Poisson GLM predicting claim count,
-with `log(Exposure)` as an offset (see `src/features/pipeline.py` for why
-exposure is an offset and never a feature).
+================
+Phase 4: the frequency model, a Poisson GLM.
 
-WHY POISSON, AND WHY log(Exposure) AS AN OFFSET
---------------------------------------------------
-Claim count is a non-negative integer with a large spike at zero (Phase 2:
-~95% of policies claim zero times): a Poisson distribution is the standard
-actuarial starting point for this shape. The GLM's linear predictor is:
+WHAT THE MODEL SAYS
+-------------------
+For policy i, the number of claims follows a Poisson law with mean mu_i:
 
-    log(E[claims]) = log(Exposure) + beta_0 + beta_1 * x_1 + ... + beta_p * x_p
+    ClaimNb_i ~ Poisson(mu_i)
 
-Rearranged, this says `E[claims] / Exposure = exp(beta_0 + beta_1*x_1 + ...)`
-i.e. the model predicts a *rate per unit exposure*, exactly the quantity a
-pricing actuary wants, with a coefficient of exactly 1.0 forced on
-`log(Exposure)` rather than estimated. That forced coefficient is what
-"offset" means in `statsmodels`, and it's the textbook-correct way to build
-a frequency model: estimating exposure's coefficient instead (i.e. treating
-it as an ordinary feature) is a common and serious modeling error.
+    log(mu_i) = log(Exposure_i) + b0 + b1 * x1_i + b2 * x2_i + ...
 
-WHY BACKWARD, FACTOR-LEVEL STEPWISE SELECTION
--------------------------------------------------
-`src/features/pipeline.py` one-hot-encodes `VehBrand`, `VehGas`, and `Region`
-into several dummy columns each. Eliminating one dummy column at a time based
-on its individual p-value can leave a factor "half kept": e.g. 8 of 10
-`VehBrand` dummies still in the model, 2 silently dropped, which is not
-interpretable or defensible to an underwriter ("why does the model use brand
-for some cars but not others?"). This module instead eliminates whole
-factors at once, using a likelihood-ratio test on the group of columns that
-belong to that factor (see `glm_diagnostics.likelihood_ratio_test`): the
-standard actuarial practice for GLM factor selection.
+  - log(Exposure_i) is the OFFSET: its coefficient is fixed to 1, so the
+    expected number of claims is proportional to the time insured;
+  - b0 is the intercept: the log-frequency of the "reference" policy
+    (every numeric factor at 0, every category at its reference level);
+  - b1, b2, ... are the coefficients of the rating factors x1, x2, ...
+
+Taking the exponential of both sides gives the multiplicative tariff:
+
+    mu_i = Exposure_i * exp(b0) * exp(b1 * x1_i) * exp(b2 * x2_i) * ...
+
+  - exp(b0) is the base frequency (claims per year);
+  - exp(bj) is the RELATIVITY of factor j: the multiplier applied for one
+    more unit of x_j (numeric factor) or for being in level j rather than the
+    reference level (category column).
+
+Example: if the coefficient of BonusMalus is 0.026, each extra point of
+bonus-malus multiplies the expected frequency by exp(0.026) = 1.026 (+2.6%),
+and 50 extra points multiply it by exp(50 * 0.026) = 3.67.
+
+The coefficients are found by maximum likelihood (statsmodels does it).
 """
 
-from __future__ import annotations
+import gc  # "garbage collector": frees memory we no longer need
 
-import gc
-from typing import Optional
+import numpy as np  # maths
+import pandas as pd  # tables
+import statsmodels.api as sm  # the library that fits GLMs
 
-import pandas as pd
-import statsmodels.api as sm
+from src.models.glm_diagnostics import likelihood_ratio_test  # compares a model with and without a factor
 
-from src.models.glm_diagnostics import likelihood_ratio_test
 
-# --------------------------------------------------------------------------- #
-# Factor groups
-# --------------------------------------------------------------------------- #
-# Maps each *rating factor* (as an actuary would name it) to the design-matrix
-# column(s) it expands to after Phase 3's encoding. Written explicitly rather
-# than inferred by string-matching column name prefixes: explicit is easier
-# to audit than clever, and this mapping changes rarely enough that hand
-# maintenance is not a burden.
-
-def build_factor_groups(feature_names: list[str]) -> dict[str, list[str]]:
+def build_factor_groups(feature_names):
     """
-    Group `PolicyFeatureEncoder`'s output columns back into the rating
-    factors they came from, so stepwise selection can add/drop a whole
-    factor at once instead of one dummy column at a time.
+    Group the model's columns by rating factor. A category such as Region is
+    stored as many 0/1 columns (Region_R21, Region_R22, ...); to keep or drop
+    "Region" we must keep or drop all of them together.
     """
-    groups = {
+    groups = {  # factor name -> list of its columns
         "DrivAge": [c for c in feature_names if c == "DrivAge"],
         "BonusMalus": [c for c in feature_names if c == "BonusMalus"],
         "VehPower": [c for c in feature_names if c == "VehPower"],
@@ -69,141 +58,107 @@ def build_factor_groups(feature_names: list[str]) -> dict[str, list[str]]:
         "VehGas": [c for c in feature_names if c.startswith("VehGas_")],
         "Region": [c for c in feature_names if c.startswith("Region_")],
     }
-    # Defensive: catch a silent mismatch immediately (e.g. the encoder's
-    # output changed but this mapping wasn't updated) instead of quietly
-    # dropping a factor from every model fit downstream.
-    grouped_cols = {c for cols in groups.values() for c in cols}
-    missing = set(feature_names) - grouped_cols
-    if missing:
-        raise ValueError(f"build_factor_groups doesn't account for columns: {missing}")
-    return {name: cols for name, cols in groups.items() if cols}  # drop any empty group
+    used = [c for cols in groups.values() for c in cols]  # every column placed in a group
+    forgotten = [c for c in feature_names if c not in used]  # columns we did not place anywhere
+    if len(forgotten) > 0:  # safety check
+        raise ValueError(f"build_factor_groups does not know the columns {forgotten}")
+    return {name: cols for name, cols in groups.items() if len(cols) > 0}  # drop factors absent from the data
 
 
-# --------------------------------------------------------------------------- #
-# Fitting
-# --------------------------------------------------------------------------- #
-
-
-def fit_poisson_glm(X: pd.DataFrame, y: pd.Series, offset: pd.Series):
+def fit_poisson_glm(X, y, offset):
     """
-    Fit a Poisson GLM with a log link and the given offset. Adds an
-    intercept column (`const`) automatically: every model in this project
-    keeps an intercept, so relativities in Section "interpretation" are all
-    read relative to the same baseline.
+    Fit the Poisson GLM  log(mu) = offset + b0 + X * b  by maximum likelihood.
+
+    X      : table of rating factors (one column per coefficient)
+    y      : number of claims of each policy
+    offset : log(Exposure) of each policy
     """
-    X_with_const = sm.add_constant(X, has_constant="add")
-    model = sm.GLM(y, X_with_const, family=sm.families.Poisson(), offset=offset)
-    return model.fit()
+    X_with_intercept = sm.add_constant(X, has_constant="add")  # add a column of 1s, whose coefficient is b0
+    model = sm.GLM(  # describe the model
+        y,  # what we predict: claim counts
+        X_with_intercept,  # the explanatory columns
+        family=sm.families.Poisson(),  # Poisson law, log link by default
+        offset=offset,  # log(Exposure), coefficient fixed to 1
+    )
+    return model.fit()  # estimate the coefficients
 
 
-def _flatten(groups: dict[str, list[str]]) -> list[str]:
+def columns_of(groups):
+    """All the columns of the factors in `groups`, as one list."""
     return [c for cols in groups.values() for c in cols]
 
 
-def backward_stepwise_selection(
-    X: pd.DataFrame,
-    y: pd.Series,
-    offset: pd.Series,
-    feature_groups: dict[str, list[str]],
-    p_threshold: float = 0.05,
-    verbose: bool = True,
-):
+def backward_stepwise_selection(X, y, offset, feature_groups, p_threshold=0.05, verbose=True):
     """
-    Backward elimination at the rating-factor level: start from the full
-    model (every factor in `feature_groups`), and repeatedly drop the least
-    useful *whole factor*: the one whose removal a likelihood-ratio test
-    says hurts the fit the least: as long as that removal's LR-test
-    p-value stays above `p_threshold` (conventionally 0.05). Stops as soon
-    as every remaining factor is significant, or only one factor is left.
+    Remove useless rating factors one at a time ("backward elimination").
 
-    Returns
-    -------
-    final_results : the fitted statsmodels GLMResults for the selected model
-    remaining_groups : dict of the factors kept
-    history : pd.DataFrame, one row per elimination step, for a fully
-        auditable record of what was dropped, when, and why
+    1. Start with every factor.
+    2. For each factor, fit the model WITHOUT it and run a likelihood-ratio
+       test: does removing it make the fit significantly worse?
+    3. The factor whose removal hurts least (largest p-value) is dropped if its
+       p-value is above 5%, i.e. if it does not significantly improve the model.
+    4. Repeat until every remaining factor is significant.
 
-    A note on memory (worth keeping if you re-read this later): this dataset
-    has ~407k training rows, and each fitted `GLMResults` object holds a
-    reference to its own copy of the design matrix plus fit internals. Trying
-    every candidate factor's removal at each step means fitting several GLMs
-    back to back: if all of those fitted objects were kept alive at once
-    (e.g. in a list) while a fresh one is fit, peak memory use multiplies by
-    however many candidates are in flight, which is enough to exhaust RAM on
-    a modest machine. So each trial model here is reduced to the two numbers
-    we actually need (its p-value and AIC) and then explicitly discarded
-    (`del` + `gc.collect()`) before the next one is fit: at most two full
-    `GLMResults` objects (the current model and one trial) are ever alive
-    simultaneously.
+    Returns the final fitted model, the factors kept, and a table of what was
+    dropped at each step.
+
+    Memory: each fitted model keeps a copy of the data. To stay within the
+    computer's memory, we keep at most two fitted models at once and delete
+    each trial model right after reading its p-value.
     """
-    remaining_groups = dict(feature_groups)
-    current_results = fit_poisson_glm(X[_flatten(remaining_groups)], y, offset)
-    history = []
+    kept = dict(feature_groups)  # the factors still in the model
+    current = fit_poisson_glm(X[columns_of(kept)], y, offset)  # model with every factor
+    history = []  # one row per factor removed
 
-    while len(remaining_groups) > 1:
-        candidates = []  # only ever holds numbers, never a fitted model object
-        for name, cols in remaining_groups.items():
-            trial_groups = {k: v for k, v in remaining_groups.items() if k != name}
-            trial_results = fit_poisson_glm(X[_flatten(trial_groups)], y, offset)
-            lr = likelihood_ratio_test(current_results, trial_results)
-            candidates.append({"factor": name, "p_value": lr["p_value"], "aic_without": trial_results.aic})
-            del trial_results
-            gc.collect()
+    while len(kept) > 1:  # stop when a single factor is left
+        trials = []  # results of "the model without factor F", for each F
+        for name in kept:  # try removing each factor in turn
+            without = {k: v for k, v in kept.items() if k != name}  # every factor except this one
+            trial = fit_poisson_glm(X[columns_of(without)], y, offset)  # fit the smaller model
+            test = likelihood_ratio_test(current, trial)  # is the factor useful?
+            trials.append({"factor": name, "p_value": test["p_value"], "aic_without": trial.aic})
+            del trial  # forget the trial model
+            gc.collect()  # and free its memory now
 
-        # The best candidate to drop is the one whose removal is *least*
-        # damaging, i.e. the highest LR-test p-value.
-        candidates.sort(key=lambda c: -c["p_value"])
-        best = candidates[0]
+        trials.sort(key=lambda t: t["p_value"], reverse=True)  # largest p-value first = least useful factor
+        least_useful = trials[0]
+        if least_useful["p_value"] <= p_threshold:  # even the least useful factor is significant
+            break  # nothing more to remove
 
-        if best["p_value"] <= p_threshold:
-            # Even the least useful remaining factor is still significant --
-            # nothing more to drop.
-            break
-
-        history.append(
-            {
-                "step": len(history) + 1,
-                "factor_removed": best["factor"],
-                "lr_test_p_value": best["p_value"],
-                "aic_before": current_results.aic,
-                "aic_after": best["aic_without"],
-            }
-        )
+        history.append({  # record the removal
+            "step": len(history) + 1,
+            "factor_removed": least_useful["factor"],
+            "lr_test_p_value": least_useful["p_value"],
+            "aic_before": current.aic,
+            "aic_after": least_useful["aic_without"],
+        })
         if verbose:
-            print(
-                f"Step {len(history)}: drop '{best['factor']}' "
-                f"(LR-test p={best['p_value']:.4f}, AIC {current_results.aic:.1f} -> {best['aic_without']:.1f})"
-            )
+            print(f"Step {len(history)}: drop '{least_useful['factor']}' (p = {least_useful['p_value']:.4f})")
 
-        del remaining_groups[best["factor"]]
-        del current_results
+        del kept[least_useful["factor"]]  # remove the factor
+        del current  # forget the previous model
         gc.collect()
-        # Refit the winning (reduced) model once more as the new baseline,
-        # rather than keeping the trial object from the loop above around --
-        # a small extra cost in compute, in exchange for bounded memory.
-        current_results = fit_poisson_glm(X[_flatten(remaining_groups)], y, offset)
+        current = fit_poisson_glm(X[columns_of(kept)], y, offset)  # refit without it
 
-    return current_results, remaining_groups, pd.DataFrame(history)
+    return current, kept, pd.DataFrame(history)
 
 
-def relativities_table(results, baseline_note: str = "") -> pd.DataFrame:
+def relativities_table(results, baseline_note=""):
     """
-    Turns raw GLM coefficients into "relativities", exp(coefficient), the
-    form an underwriter or pricing committee actually reads: a relativity of
-    1.30 means "30% more expected claims than the baseline, holding every
-    other factor fixed," which is a directly interpretable multiplier on the
-    baseline frequency, unlike the raw log-scale coefficient.
-    """
-    import numpy as np
+    Turn the GLM coefficients into relativities, the way a tariff is read.
 
-    table = pd.DataFrame(
-        {
-            "coefficient": results.params,
-            "std_error": results.bse,
-            "p_value": results.pvalues,
-        }
-    )
-    table["relativity"] = np.exp(table["coefficient"])
-    table["relativity_ci_low"] = np.exp(table["coefficient"] - 1.96 * table["std_error"])
-    table["relativity_ci_high"] = np.exp(table["coefficient"] + 1.96 * table["std_error"])
-    return table.sort_values("relativity", ascending=False)
+        relativity = exp(coefficient)
+
+    1.30 means "+30% of expected claims compared with the reference", all other
+    factors being equal. The 95% confidence interval of the relativity is
+    exp(coefficient -/+ 1.96 * standard error).
+    """
+    table = pd.DataFrame({
+        "coefficient": results.params,  # the b's
+        "std_error": results.bse,  # their standard errors
+        "p_value": results.pvalues,  # is each coefficient significantly different from 0?
+    })
+    table["relativity"] = np.exp(table["coefficient"])  # multiplier on the frequency
+    table["relativity_ci_low"] = np.exp(table["coefficient"] - 1.96 * table["std_error"])  # lower bound, 95%
+    table["relativity_ci_high"] = np.exp(table["coefficient"] + 1.96 * table["std_error"])  # upper bound, 95%
+    return table.sort_values("relativity", ascending=False)  # highest multipliers first

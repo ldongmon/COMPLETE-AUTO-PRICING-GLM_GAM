@@ -106,3 +106,20 @@ jupyter nbconvert --to notebook --execute --inplace notebooks/09_retention_model
 
 Requires `data/processed/policy_level_clean.parquet` (Phase 1) only: no fitted-model dependencies,
 since this phase builds no fitted artifact.
+
+## Worked example: renewal of IDpol 24955 at +17% = 82.8%
+
+**The policy.** IDpol 24955, Segment X, BonusMalus 68 (shown highlighted in notebook 09).
+
+| Step | Calculation | Where it comes from |
+|---|---|---|
+| Tenure | ln(68 / 100) / ln(0.95) = 7.52 years | column BonusMalus, French bonus-malus rule |
+| Loyalty | 0.6 x min(7.52 / 10, 1) = 0.4511 | assumption (60% after 10 years) |
+| logit(88%) | ln(0.88 / 0.12) = 1.9924 | 88% = assumed renewal without price change |
+| logit after +17% | 1.9924 - 4.5 x 0.17 x (1 - 0.4511) = 1.5725 | elasticity -4.5 (assumption), +17% from notebook 08 |
+| **P(renew)** | 1 / (1 + exp(-1.5725)) = **82.8%** | back to a probability |
+
+**Reading.** Without price change, every customer renews at 88%. With +17%, this customer (7.5 years
+claim-free) falls to 82.8%; IDpol 24956 (BonusMalus 57, 10.96 years, loyalty 0.6) falls only to 84.4%.
+The less loyal, the stronger the reaction. For comparison, at +10% a new customer falls to 82.4% and a
+customer of 10 years or more to 86.0%.

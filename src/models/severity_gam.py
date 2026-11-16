@@ -1,38 +1,20 @@
 """
 severity_gam.py
-=================
-Phase 6: a Gamma GAM for claim severity, benchmarked against the Phase 6
-Gamma GLM, mirroring Phase 5's frequency GLM-vs-GAM comparison protocol.
+===============
+Phase 6: a Gamma GAM for the attritional claim cost, used only as a benchmark
+for the Gamma GLM. Same curves and categories as the frequency GAM
+(frequency_gam.build_gam_terms), with a Gamma law instead of Poisson:
 
-Reuses `GAMFeatureBuilder` from `frequency_gam.py` as-is: it builds the same
-kind of feature array (smooth-term-ready continuous columns, factor-term-ready
-categorical codes) regardless of which target it's eventually paired with, so
-there is no severity-specific feature-building logic to duplicate here.
-
-WHY NO FALLBACK-FITTING MACHINERY HERE, UNLIKE THE FREQUENCY GAM
----------------------------------------------------------------------
-Phase 5's `fit_poisson_gam_with_fallback` exists because the frequency GAM
-fits on ~100k+ rows, heavy enough to hit this machine's memory limits. The
-severity GAM fits on the severity-only subset: a few thousand claiming
-policies (Phase 1: ~15,000 in the training set): small enough that a full,
-un-sub-sampled fit is cheap and low-risk. No fallback strategy is needed.
+    log(average capped amount) = c0 + f1(DrivAge) + f2(BonusMalus) + ... + (one value per category level)
 """
 
-from __future__ import annotations
+from pygam import GammaGAM  # GAM with a Gamma law and log link
 
-import numpy as np
-from pygam import GammaGAM
-
-from src.models.frequency_gam import build_gam_terms
+from src.models.frequency_gam import build_gam_terms  # the same terms as the frequency GAM
 
 
-def fit_gamma_gam(X: np.ndarray, y: np.ndarray, weights: np.ndarray | None = None, n_splines: int = 10) -> GammaGAM:
-    """
-    Fit a Gamma GAM. `weights` (typically `sev_claim_count`) plays the same
-    role as `var_weights` in the Gamma GLM (`severity_glm.fit_gamma_glm`).
-    see that module's docstring for why an averaged severity target needs
-    this weighting.
-    """
-    gam = GammaGAM(build_gam_terms(n_splines=n_splines))
-    gam.fit(X, y, weights=weights)
+def fit_gamma_gam(X, y, weights=None, n_splines=10):
+    """Fit the Gamma GAM; `weights` = number of claims behind each average amount."""
+    gam = GammaGAM(build_gam_terms(n_splines=n_splines))  # 5 curves + 3 category terms
+    gam.fit(X, y, weights=weights)  # estimate them
     return gam

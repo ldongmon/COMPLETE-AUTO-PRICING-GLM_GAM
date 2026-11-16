@@ -85,6 +85,18 @@ correction would be applied with a test-and-learn cell, and the simulators recal
 experience. The Streamlit app lets a user run the same analysis on another segment or another price
 change.
 
+## How to read the code
+
+The code is written for an actuary, not a developer: plain functions and simple syntax, a comment on
+every line, and at the top of each file the formula it implements with a worked example. Every
+important figure is also calculated by hand in the notebooks, on real policies identified by their
+`IDpol`, with the policy shown inside the dataset (highlighted row) and the origin of each number
+stated: a dataset column, a fitted coefficient or an assumption. For example, notebook 07 rebuilds the
+technical premium of IDpol 1006850 term by term: frequency 0.1209 from the refined Poisson GLM,
+average cost EUR 1,201.98 from the Gamma GLM, plus the EUR 33.54 large-loss loading, giving
+EUR 178.88 per year, exactly the value returned by the pricing function. The app shows the same
+breakdown for any profile ("How this premium is calculated").
+
 ## Architecture
 
 ```
@@ -97,6 +109,7 @@ src/         code shared by the notebooks and the app
   pricing/   portfolio KPIs, Segment X, commercial premium
   retention/ renewal simulator
   prospect/  conversion simulator
+  utils/     hand calculations: term-by-term GLM tables, dataset views with the policy highlighted
 scoring/     technical premium scoring and scenario engine
 app/         Streamlit app (3 pages)
 tests/       pytest unit tests
@@ -122,7 +135,7 @@ python -m ipykernel install --user --name=auto-pricing-venv --display-name="Pyth
 jupyter lab
 ```
 
-Tests (151):
+Tests (154):
 
 ```bash
 pytest tests/ -v

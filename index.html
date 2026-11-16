@@ -347,7 +347,7 @@
     <div class="kpi-grid">
         <div class="kpi"><div class="val">14</div><div class="lbl">phases (0 to 13), complete</div></div>
         <div class="kpi"><div class="val">11</div><div class="lbl">executed notebooks</div></div>
-        <div class="kpi"><div class="val">151</div><div class="lbl">passing unit tests</div></div>
+        <div class="kpi"><div class="val">154</div><div class="lbl">passing unit tests</div></div>
         <div class="kpi"><div class="val">668,626</div><div class="lbl">policies modeled</div></div>
         <div class="kpi"><div class="val">9</div><div class="lbl">model cards</div></div>
         <div class="kpi"><div class="val">3</div><div class="lbl">dashboard pages</div></div>
@@ -711,11 +711,19 @@ src/         code shared by the notebooks and the app
   pricing/   portfolio KPIs, Segment X, commercial premium
   retention/ renewal simulator
   prospect/  conversion simulator
+  utils/     hand calculations (term-by-term GLM tables, policy shown in the dataset)
 scoring/     technical premium scoring and scenario engine
 app/         3-page Streamlit dashboard
-tests/       151 pytest unit tests
+tests/       154 pytest unit tests
 docs/        methodology, data dictionary, project plan
 reports/     model cards (9) and exported tables</pre>
+
+    <p>The code is written to be read by an actuary: plain functions, a comment on every line, and the
+    formula of each file with a worked example at its top. Every important figure is also calculated by
+    hand in the notebooks, on real policies identified by their IDpol and shown inside the dataset. For
+    example, IDpol 1006850: frequency 0.1209 (refined Poisson GLM) &times; average cost EUR 1,201.98
+    (Gamma GLM) + EUR 33.54 large-loss loading = technical premium EUR 178.88 per year, the value
+    returned by the pricing function.</p>
 
     <div class="stack-tags">
         <span class="tag">Python</span>

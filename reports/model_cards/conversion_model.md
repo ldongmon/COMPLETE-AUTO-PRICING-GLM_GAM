@@ -100,3 +100,19 @@ jupyter nbconvert --to notebook --execute --inplace notebooks/10_prospect_conver
 ```
 
 Requires `data/processed/policy_level_clean.parquet` (Phase 1) only.
+
+## Worked example: conversion of a prospect like IDpol 24955 at +17% = 5.98%
+
+**The policy.** IDpol 24955, Segment X, BonusMalus 68 (shown highlighted in notebook 10).
+
+| Step | Calculation | Where it comes from |
+|---|---|---|
+| Risk access | 0.5 x min(max(68 - 100, 0) / 100, 1) = 0 | column BonusMalus (below 100: no effect) |
+| logit(15%) | ln(0.15 / 0.85) = -1.7346 | 15% = assumed conversion at the market price |
+| logit after +17% | -1.7346 - 6.0 x 0.17 x (1 - 0) = -2.7546 | elasticity -6.0 (assumption), +17% from notebook 08 |
+| **P(convert)** | 1 / (1 + exp(2.7546)) = **5.98%** | back to a probability |
+
+**Reading.** Every policy of Segment X has a BonusMalus below 100, so every prospect of the segment
+converts at the same 5.98% instead of 15%: 60% fewer sales, against 4.8% of existing customers leaving.
+For comparison, at +10% a low-risk prospect (BonusMalus 100) converts at 8.8% and a high-risk one
+(BonusMalus 200, risk access 0.5) at 11.6%.

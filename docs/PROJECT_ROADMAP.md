@@ -155,6 +155,9 @@ Code: [`app/`](../app/) · Card: [`streamlit_app.md`](../reports/model_cards/str
 
 - [`docs/methodology.md`](methodology.md): methodology, assumptions, limitations, validation summary.
 - Model cards in `reports/model_cards/`; README.
+- Code rewritten for readability by an actuary: plain functions, a comment on every line, the formula and
+  a worked example at the top of each file, and hand calculations in every notebook on real policies
+  (IDpol, highlighted dataset row, origin of each number). Results unchanged.
 
 ---
 

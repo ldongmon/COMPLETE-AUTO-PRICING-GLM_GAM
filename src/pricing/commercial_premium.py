@@ -1,48 +1,36 @@
 """
 commercial_premium.py
-=======================
-Phase 11: turns the Phase 7 technical premium (expected claims cost) into a
-**commercial premium** (what would be charged), loaded for expenses. This is
-the premium the Phase 11 scenario engine reprices.
+=====================
+Phase 11: from the technical premium (expected claims) to the commercial
+premium (what the customer pays), by adding the expenses.
 
-WHERE THE LOADING COMES FROM
-------------------------------
-The technical premium reconciles with paid claims on the training and test
-sets (Phase 7 and Phase 8), so it is used as the expected claims cost, an
-expected Loss Ratio of 100%. With the documented 27% expense ratio, the
-loading that makes expected claims plus expenses equal the premium is:
+THE LOADING
+-----------
+We want, on average, claims + expenses = premium. With a commercial premium
+P = technical premium x (1 + loading):
 
-    COR = LR / (1 + loading) + expense_ratio = 1
-    =>  loading = LR / (1 - expense_ratio) - 1
+    expected claims = technical premium        (expected LR on the technical premium = 100%)
+    expenses        = 27% x P
+    claims + expenses = P   =>   technical premium = (1 - 0.27) x P
+                            =>   1 + loading = 1 / 0.73   =>   loading = 37.0%
 
-With LR = 100% and expenses at 27%: loading = 37.0%. The realized Loss Ratio
-of the book is not used, because one year's large losses would then be priced
-into every policy (Phase 8 Section 3). The Phase 11 scenario engine then asks
-what an additional, segment-specific adjustment does to profitability.
+General formula: loading = expected LR / (1 - expense ratio) - 1.
+
+Example: technical premium EUR 150 -> commercial premium 150 x 1.37 = EUR 205.48;
+expenses 27% x 205.48 = 55.48; 205.48 - 55.48 = 150 left for the claims.
+
+The book's realized LR (112.7%, Phase 8) is NOT used: it is pushed up by a few
+giant claims in one data set, and would charge that bad luck to everybody.
 """
 
-from __future__ import annotations
 
-import pandas as pd
-
-
-def calibrate_breakeven_loading(loss_ratio: float, expense_ratio: float) -> float:
-    """
-    The commercial loading `L` such that scaling every policy's premium by
-    `(1 + L)` brings the portfolio's Combined Operating Ratio to exactly
-    100%, given the current (technical-premium-based) Loss Ratio and the
-    assumed expense ratio. See module docstring for the one-line derivation.
-    """
+def calibrate_breakeven_loading(loss_ratio, expense_ratio):
+    """loading = LR / (1 - expense ratio) - 1  (37.0% for LR 100% and expenses 27%)."""
     return loss_ratio / (1 - expense_ratio) - 1
 
 
-def add_commercial_premium(df: pd.DataFrame, loading: float) -> pd.DataFrame:
-    """
-    Adds a `commercial_premium` column: `technical_premium * (1 + loading)`.
-    Does not mutate `df`. `loading` is required (not defaulted) so every
-    caller states explicitly which loading it's using: this project's
-    running discipline of never leaving an assumption implicit.
-    """
+def add_commercial_premium(df, loading):
+    """Adds commercial_premium = technical_premium x (1 + loading) (a copy, df is not changed)."""
     out = df.copy()
     out["commercial_premium"] = out["technical_premium"] * (1 + loading)
     return out

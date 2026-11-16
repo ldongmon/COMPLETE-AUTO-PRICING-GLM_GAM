@@ -88,3 +88,23 @@ jupyter nbconvert --to notebook --execute --inplace notebooks/11_commercial_prem
 Requires the Phase 7 artifacts (`models/freq_glm_refined.pkl`, `models/sev_glm.pkl`,
 `models/feature_encoder.joblib`), `data/processed/policy_level_clean.parquet` (Phase 1) and
 `reports/figures/segment_x.json` (Phase 8).
+
+## Worked example: the margin of IDpol 24955 at +17% = EUR +0.49
+
+**The policy.** A policy of Segment X (BonusMalus 68), the first of the segment in the dataset (shown
+highlighted in notebook 11). We look at what it would bring if its price rose by 17%.
+
+| Element | Calculation | Where it comes from |
+|---|---|---|
+| Technical premium | EUR 128.84 | pricing function (notebook 07), from the policy's row |
+| Commercial premium today | 128.84 x 1.3699 = EUR 176.50 | +37% for expenses (notebook 11) |
+| Premium after +17% | 176.50 x 1.17 = EUR 206.50 | correction measured in notebook 08 |
+| Expected cost | 128.84 x 1.166 = EUR 150.26 | the segment costs 1.166 times its technical premium |
+| Expenses | 27% x 206.50 = EUR 55.76 | expense assumption |
+| **Margin** | 206.50 - 150.26 - 55.76 = **EUR +0.49** | |
+| P(renew) | 82.8% | renewal simulator, tenure 7.52 years from BonusMalus 68 (notebook 09) |
+| Expected contribution | 82.8% x 0.49 = EUR +0.41 | |
+
+**Reading.** At today's price, this policy's margin is EUR -21.41: it loses money. With +17%, it just
+covers its cost. On the whole segment (notebook 11): 175,697 expected renewals (contribution EUR
++105,641) and 12,630 new policies (EUR +7,616), total EUR +113,257, equal to the engine's result.

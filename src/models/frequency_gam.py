@@ -1,227 +1,181 @@
 """
 frequency_gam.py
-=================
-Phase 5: a Poisson GAM (Generalized Additive Model) for claim frequency,
-benchmarked against the Phase 4 GLM.
+================
+Phase 5: the frequency GAM (Generalised Additive Model).
 
-WHY A DIFFERENT FEATURE REPRESENTATION THAN THE GLM
-------------------------------------------------------
-`src/features/pipeline.py`'s `PolicyFeatureEncoder` was purpose-built for the
-GLM: it one-hot encodes categorical factors into dummy columns, because a
-GLM's linear predictor needs one coefficient per dummy. A GAM works
-differently: `pygam` fits a smooth spline `s()` per continuous factor and a
-per-level step function `f()` per categorical factor *natively*, without
-one-hot expansion (one-hot dummies would force pygam to fit a separate,
-disconnected smooth to each 0/1 indicator, which is not what we want). So
-Phase 5 introduces `GAMFeatureBuilder`, a parallel encoder that reuses Phase
-3's *decisions* (which factors, the `VehAge` capping threshold, the
-`log(Density)` transform, dropping `Area`) but produces a different output
-shape suited to `pygam`.
+GLM VS. GAM, IN ONE FORMULA EACH
+--------------------------------
+GLM (Phase 4): each numeric factor gets ONE coefficient, i.e. a straight line
+on the log scale:
 
-WHY pygam's `exposure=` INSTEAD OF A LOG-OFFSET
----------------------------------------------------
-`pygam.PoissonGAM` has no `offset=` argument like `statsmodels`. Internally,
-passing `exposure=` to `.fit()`/`.predict()` normalizes the response to a
-rate (`y / exposure`) and weights the fit by `exposure` (see
-`PoissonGAM._exposure_to_weights` in the pygam source): a different
-implementation from statsmodels' `log(Exposure)` offset, but the standard,
-mathematically equivalent workaround used across GAM software (R's `mgcv`
-faces the same limitation and is worked around the same way) for fitting a
-rate model when a package has no native offset support.
+    log(mu) = log(Exposure) + b0 + b1 * DrivAge + b2 * BonusMalus + ...
 
-ON SMOOTHING PARAMETER SELECTION
-------------------------------------
-`pygam.gridsearch` (its automatic smoothing-parameter search) proved
-numerically unstable on this data/term specification during development.
-every candidate in the grid failed to converge, a known rough edge in this
-library (pygam's own summary output carries a "KNOWN BUG" warning about its
-p-values, for context on the library's maturity). Rather than spend the
-project's time debugging a third-party library's internals, this module uses
-pygam's sensible default smoothing (`lam=0.6` on every term) uniformly: a
-documented simplification, not a silent one.
+GAM (this phase): each numeric factor gets its own smooth CURVE f(.):
+
+    log(mu) = log(Exposure) + b0 + f1(DrivAge) + f2(BonusMalus) + f3(VehPower)
+              + f4(log Density) + f5(VehAge) + (one value per level of VehBrand, VehGas, Region)
+
+HOW A CURVE f(x) IS BUILT: SPLINES
+----------------------------------
+The range of x (for instance ages 18 to 100) is cut into a few pieces. On
+each piece the curve is a small polynomial, and the pieces join smoothly.
+Equivalently, f(x) is a weighted sum of 10 "bump" functions (B-splines),
+each covering part of the range:
+
+    f(x) = a1 * B1(x) + a2 * B2(x) + ... + a10 * B10(x)
+
+The GAM estimates the weights a1..a10 like GLM coefficients, with a penalty
+(lam) that stops the curve from wiggling too much. With 10 bumps per factor
+the curve can rise, fall and rise again: it follows the data instead of
+forcing a straight line.
+
+WHAT WE DO WITH THE GAM
+-----------------------
+We do NOT use the GAM as the tariff (a curve is hard to file and to explain).
+We use it as a magnifying glass: we read its curves (gam_relativity_curve),
+find where they change direction, and cut DrivAge and VehAge into bands at
+those points. The bands then go into the GLM (frequency_glm_refined.py).
+
+Categories (VehBrand, VehGas, Region) are "factor terms" in the GAM: one
+value per level, exactly like dummy columns in a GLM.
 """
 
-from __future__ import annotations
+import numpy as np  # maths
+import pandas as pd  # tables
+from pygam import PoissonGAM, f, s  # the GAM library: s() = smooth curve term, f() = factor (category) term
+from sklearn.model_selection import train_test_split  # random sub-sample
 
-from dataclasses import dataclass, field
-from typing import Optional
-
-import numpy as np
-import pandas as pd
-from pygam import PoissonGAM, f, s
-from sklearn.model_selection import train_test_split
-
-# Column order produced by GAMFeatureBuilder.transform: term indices below
-# must match this order exactly.
-CONTINUOUS_COLS = ["DrivAge", "BonusMalus", "VehPower", "log_Density", "VehAge_capped"]
-CATEGORICAL_COLS = ["VehBrand", "VehGas", "Region"]
+# The columns given to the GAM, in this exact order (term number = position in the list).
+CONTINUOUS_COLS = ["DrivAge", "BonusMalus", "VehPower", "log_Density", "VehAge_capped"]  # terms 0 to 4: smooth curves
+CATEGORICAL_COLS = ["VehBrand", "VehGas", "Region"]  # terms 5 to 7: one value per level
 ALL_GAM_COLS = CONTINUOUS_COLS + CATEGORICAL_COLS
 
 
-@dataclass
 class GAMFeatureBuilder:
     """
-    Builds the numeric array `pygam` needs: raw (transformed) continuous
-    columns for smooth terms, integer category codes for factor terms.
-    Fit on train only, exactly like `PolicyFeatureEncoder` (Phase 3): see
-    that class's docstring for why this discipline matters.
+    Prepares the table for the GAM: numbers for the curve terms, level codes
+    (0, 1, 2, ...) for the category terms. Learned on train only, like the
+    GLM encoder.
     """
 
-    vehage_cap_: Optional[float] = field(default=None, init=False)
-    categories_: Optional[dict] = field(default=None, init=False)
-    is_fitted_: bool = field(default=False, init=False)
+    def __init__(self):
+        self.vehage_cap_ = None  # vehicle-age cap (taken from the GLM encoder)
+        self.categories_ = None  # list of levels of each category
+        self.is_fitted_ = False
 
-    def fit(self, train_df: pd.DataFrame, vehage_cap: float) -> "GAMFeatureBuilder":
-        """
-        `vehage_cap` is passed in rather than recomputed, so the GLM and GAM
-        use the *exact same* `VehAge` capping threshold (Phase 3's
-        `PolicyFeatureEncoder.vehage_cap_`): one less place the two models
-        could silently diverge on a data-preparation decision that isn't
-        actually part of what's being compared.
-        """
-        self.vehage_cap_ = vehage_cap
-        self.categories_ = {
-            col: sorted(train_df[col].astype(str).unique()) for col in CATEGORICAL_COLS
-        }
+    def fit(self, train_df, vehage_cap):
+        """Learn the category levels; reuse the GLM's vehicle-age cap so both models see the same data."""
+        self.vehage_cap_ = vehage_cap  # same cap as the GLM (24 years)
+        self.categories_ = {}
+        for col in CATEGORICAL_COLS:
+            self.categories_[col] = sorted(train_df[col].astype(str).unique())  # levels in alphabetical order
         self.is_fitted_ = True
         return self
 
-    def transform(self, df: pd.DataFrame) -> np.ndarray:
+    def transform(self, df):
+        """Return a table of numbers, one column per GAM term, in the order of ALL_GAM_COLS."""
         if not self.is_fitted_:
             raise RuntimeError("Call .fit(train_df, vehage_cap) before .transform().")
-
         columns = [
-            df["DrivAge"].to_numpy(dtype=float),
-            df["BonusMalus"].to_numpy(dtype=float),
-            df["VehPower"].to_numpy(dtype=float),
-            np.log(df["Density"].to_numpy(dtype=float)),
-            df["VehAge"].clip(upper=self.vehage_cap_).to_numpy(dtype=float),
+            df["DrivAge"].to_numpy(dtype=float),  # term 0
+            df["BonusMalus"].to_numpy(dtype=float),  # term 1
+            df["VehPower"].to_numpy(dtype=float),  # term 2
+            np.log(df["Density"].to_numpy(dtype=float)),  # term 3: log of density
+            df["VehAge"].clip(upper=self.vehage_cap_).to_numpy(dtype=float),  # term 4: capped vehicle age
         ]
-        for col in CATEGORICAL_COLS:
-            # A fixed category list learned from train. Any value unseen in training is
-            # replaced with the first known category *before* building the Categorical
-            # (rather than afterward, via the resulting -1 code): an arbitrary but
-            # always-valid fallback, documented and safe for a scoring pipeline, matching
-            # the spirit of the GLM encoder's handle_unknown="ignore".
-            known_categories = self.categories_[col]
-            values = df[col].astype(str)
-            values = values.where(values.isin(known_categories), known_categories[0])
-            codes = pd.Categorical(values, categories=known_categories).codes
+        for col in CATEGORICAL_COLS:  # terms 5, 6, 7
+            levels = self.categories_[col]  # levels known from train
+            values = df[col].astype(str)  # level of each policy
+            values = values.where(values.isin(levels), levels[0])  # unknown level -> treated as the first level
+            codes = pd.Categorical(values, categories=levels).codes  # level -> its position 0, 1, 2, ...
             columns.append(codes.astype(float))
+        return np.column_stack(columns)  # put the columns side by side
 
-        return np.column_stack(columns)
 
-
-def build_gam_terms(n_splines: int = 10):
+def build_gam_terms(n_splines=10):
     """
-    5 smooth spline terms (continuous factors) + 3 factor terms (categorical
-    factors), matching `ALL_GAM_COLS`'s column order exactly.
-
-    `n_splines=10` (pygam's default is 20) is a deliberate, documented
-    simplification: with ~400k rows this is still far more flexibility than
-    needed to capture the shapes Phase 2 found (a young-driver spike, a
-    new-vehicle spike), and halving the basis size meaningfully reduces the
-    fit's memory footprint on this machine: worth doing given Phase 4's
-    memory lessons, at no real cost to the comparison this phase is after.
+    The GAM formula: 5 smooth curves (10 B-splines each) + 3 category terms.
+    The numbers 0..7 are the column positions given by GAMFeatureBuilder.
     """
     return (
-        s(0, n_splines=n_splines)  # DrivAge
-        + s(1, n_splines=n_splines)  # BonusMalus
-        + s(2, n_splines=n_splines)  # VehPower
-        + s(3, n_splines=n_splines)  # log_Density
-        + s(4, n_splines=n_splines)  # VehAge_capped
-        + f(5)  # VehBrand
-        + f(6)  # VehGas
-        + f(7)  # Region
+        s(0, n_splines=n_splines)  # f1(DrivAge)
+        + s(1, n_splines=n_splines)  # f2(BonusMalus)
+        + s(2, n_splines=n_splines)  # f3(VehPower)
+        + s(3, n_splines=n_splines)  # f4(log Density)
+        + s(4, n_splines=n_splines)  # f5(VehAge)
+        + f(5)  # VehBrand: one value per brand
+        + f(6)  # VehGas: one value per fuel
+        + f(7)  # Region: one value per region
     )
 
 
-def fit_poisson_gam(X: np.ndarray, y: np.ndarray, exposure: np.ndarray, n_splines: int = 10) -> PoissonGAM:
-    """Fit a Poisson GAM with `exposure` as the actuarial offset equivalent (see module docstring)."""
-    gam = PoissonGAM(build_gam_terms(n_splines=n_splines))
-    gam.fit(X, y, exposure=exposure)
+def fit_poisson_gam(X, y, exposure, n_splines=10):
+    """
+    Fit the Poisson GAM. `exposure=` plays the role of the GLM's offset: the
+    expected number of claims is exposure x exp(sum of the terms).
+    """
+    gam = PoissonGAM(build_gam_terms(n_splines=n_splines))  # describe the model
+    gam.fit(X, y, exposure=exposure)  # estimate the curves
     return gam
 
 
-# Fitting configurations to try, most statistically ambitious first: (fraction of train_df to
-# sample, number of spline knots per smooth term). Each step down roughly halves the memory a fit
-# needs (fewer rows *and* a narrower basis matrix), for the fallback strategy below.
-DEFAULT_FIT_CONFIGS = [
-    (0.25, 10),
-    (0.15, 8),
-    (0.10, 6),
-    (0.06, 6),
-    (0.03, 5),
-]
+# Sizes to try, from the largest to the smallest: (share of the train set, number of splines).
+DEFAULT_FIT_CONFIGS = [(0.25, 10), (0.15, 8), (0.10, 6), (0.06, 6), (0.03, 5)]
 
 
-def fit_poisson_gam_with_fallback(
-    train_df: pd.DataFrame,
-    gam_builder: "GAMFeatureBuilder",
-    configs: Optional[list[tuple[float, int]]] = None,
-    random_state: int = 42,
-    verbose: bool = True,
-):
+def fit_poisson_gam_with_fallback(train_df, gam_builder, configs=None, random_state=42, verbose=True):
     """
-    Fits a Poisson GAM using the largest, most flexible configuration this machine can actually
-    complete, by trying `configs` in order and catching `MemoryError` to fall back to a smaller one.
+    Fit the GAM on the largest sub-sample this computer can handle.
 
-    WHY THIS EXISTS
-    -----------------
-    This project's development machine has ~8GB RAM, and how much of it is actually free varies a
-    lot moment to moment with whatever else is running (confirmed during development: concurrent
-    browser tabs, an IDE, and other background processes can leave well under 1GB free): the exact
-    same fit call has both succeeded and failed with a `MemoryError` at different points in the same
-    session, at the same sub-sample size. Rather than hand-pick one fixed, maximally conservative
-    configuration "just in case" (which would silently under-use the machine's capacity whenever more
-    memory happens to be free), this tries progressively smaller, cheaper configurations only as
-    needed: the same discipline a production service applies under variable resource pressure,
-    applied here to a notebook that has to actually finish running on real, shared hardware.
-
-    Returns
-    -------
-    (gam, config_used) where `config_used` is a dict recording which (train_size, n_splines) pair
-    actually succeeded and how many rows it used, since which configuration
-    was used affects how much to trust the fitted curves' fine detail (Section 5 discusses this).
+    A GAM needs much more memory than a GLM (10 columns per curve). On an 8 GB
+    machine a fit on 25% of the train set sometimes fails with a MemoryError.
+    We try the sizes of DEFAULT_FIT_CONFIGS in order and keep the first that
+    works. The sub-sample is stratified on the claim class, like the split.
     """
     if configs is None:
         configs = DEFAULT_FIT_CONFIGS
+    claim_class = pd.cut(train_df["ClaimNb_freq_target"], bins=[-1, 0, 1, np.inf], labels=["0", "1", "2+"])  # 0, 1, 2+ claims
 
-    claim_bucket = pd.cut(train_df["ClaimNb_freq_target"], bins=[-1, 0, 1, np.inf], labels=["0", "1", "2+"])
-
-    last_error: Optional[MemoryError] = None
-    for train_size, n_splines in configs:
+    for train_size, n_splines in configs:  # from the largest size to the smallest
         try:
-            if train_size < 1.0:
-                train_sub, _ = train_test_split(
-                    train_df, train_size=train_size, stratify=claim_bucket, random_state=random_state
-                )
+            if train_size < 1.0:  # take a stratified sub-sample
+                train_sub, _ = train_test_split(train_df, train_size=train_size, stratify=claim_class, random_state=random_state)
             else:
                 train_sub = train_df
-
-            X_sub = gam_builder.transform(train_sub)
-            y_sub = train_sub["ClaimNb_freq_target"].to_numpy(dtype=float)
-            exposure_sub = train_sub["Exposure"].to_numpy(dtype=float)
-
-            gam = fit_poisson_gam(X_sub, y_sub, exposure_sub, n_splines=n_splines)
-
-            config_used = {"train_size": train_size, "n_splines": n_splines, "n_rows": len(train_sub)}
+            X_sub = gam_builder.transform(train_sub)  # GAM columns
+            y_sub = train_sub["ClaimNb_freq_target"].to_numpy(dtype=float)  # claims
+            exposure_sub = train_sub["Exposure"].to_numpy(dtype=float)  # years insured
+            gam = fit_poisson_gam(X_sub, y_sub, exposure_sub, n_splines=n_splines)  # the fit itself
             if verbose:
-                print(
-                    f"GAM fit succeeded: train_size={train_size:.0%} ({len(train_sub):,} rows), "
-                    f"n_splines={n_splines}"
-                )
-            return gam, config_used
-
-        except MemoryError as exc:
-            last_error = exc
+                print(f"GAM fit succeeded: train_size={train_size:.0%} ({len(train_sub):,} rows), n_splines={n_splines}")
+            return gam, {"train_size": train_size, "n_splines": n_splines, "n_rows": len(train_sub)}
+        except MemoryError:  # not enough memory: try the next, smaller size
             if verbose:
-                print(
-                    f"MemoryError at train_size={train_size:.0%}, n_splines={n_splines} "
-                    "-- falling back to a smaller configuration."
-                )
-            continue
+                print(f"MemoryError at train_size={train_size:.0%}, n_splines={n_splines}: trying a smaller size.")
+    raise MemoryError(f"Could not fit the GAM with any of the sizes {configs}")
 
-    raise MemoryError(
-        f"Could not fit a Poisson GAM at any configuration in {configs}; last error: {last_error}"
-    )
+
+def gam_relativity_curve(gam, term_index, x_values):
+    """
+    Read one curve of the GAM at chosen values of x (e.g. ages 18, 20, 25, ...).
+
+    The GAM gives f(x) on the log scale. We turn it into a RELATIVITY, the
+    multiplier on the frequency, centred so that the average over the grid is 1:
+
+        relativity(x) = exp( f(x) - average of f over the grid )
+
+    Returns a table: x, relativity, and the lower / upper bounds of its 95% band.
+    """
+    grid = gam.generate_X_grid(term=term_index, n=200)  # 200 evenly spaced points over the range of x
+    f_values, band = gam.partial_dependence(term=term_index, X=grid, width=0.95)  # f(x) and its 95% band on the grid
+    centre = f_values.mean()  # average of f over the grid
+    x_grid = grid[:, term_index]  # the x values of the grid
+    rows = []
+    for x in x_values:  # read the curve at each requested x (straight-line interpolation between grid points)
+        rows.append({
+            "x": x,
+            "relativity": float(np.exp(np.interp(x, x_grid, f_values) - centre)),
+            "band_low": float(np.exp(np.interp(x, x_grid, band[:, 0]) - centre)),
+            "band_high": float(np.exp(np.interp(x, x_grid, band[:, 1]) - centre)),
+        })
+    return pd.DataFrame(rows)

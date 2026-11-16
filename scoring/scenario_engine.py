@@ -1,110 +1,84 @@
 """
 scenario_engine.py
-====================
-Phase 11: the direct, final answer to this project's original business
-question: *"Segment X has a Loss Ratio above the rest of the book. Should we reprice it,
-and how much, and what would that do to retention, conversion, and overall
-profitability?"* Combines Phase 7's technical premium, Phase 9's retention
-model, and Phase 10's conversion model into a single scenario evaluation.
+==================
+Phase 11: what happens to a segment's profit if we change its price by x%?
 
-WHAT "PROFITABILITY" MEANS HERE, PRECISELY
-------------------------------------------------
-For a segment repriced by `price_change_pct`, this engine projects two
-sources of policies for the *next* period:
+THE IDEA IN FOUR LINES
+----------------------
+For a price change x applied to every policy of the segment, next year:
 
-1. **Retained policies**: existing segment policyholders who renew, at the
-   repriced commercial premium, with probability given by Phase 9's
-   `renewal_probability`.
-2. **New policies**: prospects quoted at the repriced commercial premium,
-   converting with probability given by Phase 10's `conversion_probability`.
+  1. existing customers renew with probability P(renew)   (Phase 9)
+  2. prospects buy with probability P(convert)            (Phase 10)
+  3. each policy pays   commercial premium x (1 + x)
+  4. each policy costs  technical premium x cost factor   (the price change does not change the risk)
 
-For both, the expected **contribution** (premium collected, minus expected
-claims cost, minus expenses) is summed:
+    contribution = premium - claims - expenses       (expenses = 27% of the premium)
 
-    contribution = written_premium - expected_claims - (written_premium * expense_ratio)
+COST FACTOR
+-----------
+The expected cost of a policy as a multiple of its technical premium:
+1.0 for the book (the technical premium is the expected cost), 1.166 for
+Segment X (its cost relativity measured out of sample in Phase 8).
 
-`expected_claims` is the technical premium (Phase 7) multiplied by a
-`cost_factor`: the segment's expected cost as a multiple of its technical
-premium, measured on experience by `experience_cost_factor`
-(src/pricing/portfolio_kpis.py). For the whole book this factor is the book
-Loss Ratio, the same basis the commercial loading is calibrated on, so a 0%
-price change on the whole book returns a contribution of zero. Repricing
-changes what is charged, not what a policy is expected to cost.
+HAND EXAMPLE FOR ONE POLICY (IDpol 24955, BonusMalus 68, Segment X, +17%)
+-----------------------------------------------------------------------
+technical premium (Phase 7)  EUR 128.84
+commercial premium           128.84 x 1.3699 = 176.50 -> after +17%: 176.50 x 1.17 = 206.50
+expected cost                128.84 x 1.166 (Phase 8) = 150.26
+expenses                     27% x 206.50 = 55.76
+margin if it renews          206.50 - 150.26 - 55.76 = EUR +0.49   (today: 176.50 - 150.26 - 47.66 = EUR -21.41)
+P(renew)                     tenure 7.52 years (from BonusMalus 68) -> 82.8% (Phase 9)
+expected contribution        82.8% x 0.49 = EUR +0.41
 
-THE NEW-BUSINESS QUOTE VOLUME ASSUMPTION
-------------------------------------------
-This dataset (Phase 1) contains only the *existing*, in-force book: there
-is no record of how many prospects were quoted but didn't convert. To
-project new business at all, this engine assumes the segment's annual quote
-volume equals its current policy count (`quote_volume_multiplier=1.0` by
-default): a stated, adjustable simplification, not a measured figure. A
-real deployment would replace this with actual quote-pipeline data.
-
-A SECOND STATED SIMPLIFICATION: RETAINED AND NEW POLICIES SHARE THE SEGMENT'S AVERAGE RISK PROFILE
-------------------------------------------------------------------------------------------------------
-This engine does not model adverse selection in *who* lapses or *who*
-converts (e.g. "maybe only the highest-risk policyholders stay when price
-rises"): retained and new policies are assumed to carry the segment's
-average technical cost. A real deployment might refine this if retention/
-conversion turn out to correlate with risk level within the segment, which
-this project has not tested.
+TWO STATED SIMPLIFICATIONS
+--------------------------
+  * Number of quotes per year = number of policies in the segment (no quote data).
+  * Customers who stay and new customers have the segment's average risk
+    (no adverse selection modelled).
 """
 
-from __future__ import annotations
+import pandas as pd  # tables
 
-import numpy as np
-import pandas as pd
+from src.prospect.conversion_model import conversion_probability  # Phase 10
+from src.retention.renewal_model import renewal_probability  # Phase 9
 
-from src.prospect.conversion_model import conversion_probability
-from src.retention.renewal_model import renewal_probability
-
-DEFAULT_EXPENSE_RATIO = 0.27  # Phase 8's documented assumption, reused here for consistency
-DEFAULT_QUOTE_VOLUME_MULTIPLIER = 1.0  # see module docstring
+DEFAULT_EXPENSE_RATIO = 0.27  # same assumption as Phase 8
+DEFAULT_QUOTE_VOLUME_MULTIPLIER = 1.0  # quotes per year = 1 x number of policies
 
 
-def run_repricing_scenario(
-    segment_df: pd.DataFrame,
-    price_change_pct: float,
-    expense_ratio: float = DEFAULT_EXPENSE_RATIO,
-    quote_volume_multiplier: float = DEFAULT_QUOTE_VOLUME_MULTIPLIER,
-    cost_factor: float = 1.0,
-) -> dict:
+def run_repricing_scenario(segment_df, price_change_pct, expense_ratio=DEFAULT_EXPENSE_RATIO,
+                           quote_volume_multiplier=DEFAULT_QUOTE_VOLUME_MULTIPLIER, cost_factor=1.0):
     """
-    Evaluate one repricing scenario for a segment (already filtered to it,
-    e.g. `df[df["BonusMalus"].between(51, 80)]`), with columns `commercial_premium`,
-    `technical_premium`, `tenure_years_proxy`, and `BonusMalus`.
-
-    Returns a dict with the full breakdown: retained vs. new business,
-    each side's premium/claims/contribution, and portfolio totals, so the
-    scenario's story can be read at whatever level of detail is needed, not
-    just the bottom line.
+    One scenario for one segment (columns needed: commercial_premium,
+    technical_premium, tenure_years_proxy, BonusMalus). Returns the full
+    breakdown: renewals, new business, premium, claims, contribution.
     """
-    p_renew = renewal_probability(price_change_pct, segment_df["tenure_years_proxy"])
-    repriced_commercial_premium = segment_df["commercial_premium"] * (1 + price_change_pct)
-    # Expected cost per policy: technical premium x the segment's experience cost factor.
-    # Unaffected by the price change.
-    technical_cost = segment_df["technical_premium"] * cost_factor
+    # Each policy: probability of renewing, new premium, expected cost.
+    p_renew = renewal_probability(price_change_pct, segment_df["tenure_years_proxy"])  # Phase 9
+    repriced_commercial_premium = segment_df["commercial_premium"] * (1 + price_change_pct)  # new premium
+    technical_cost = segment_df["technical_premium"] * cost_factor  # expected cost (does not move with the price)
 
-    # --- Retained (existing) policies ---
-    expected_renewals = float(p_renew.sum())
-    retained_premium = float((p_renew * repriced_commercial_premium).sum())
-    retained_claims = float((p_renew * technical_cost).sum())
-    retained_expenses = retained_premium * expense_ratio
+    # 1. Existing customers: each one counts for its probability of renewing.
+    expected_renewals = float(p_renew.sum())  # expected number of renewals
+    retained_premium = float((p_renew * repriced_commercial_premium).sum())  # sum of P(renew) x premium
+    retained_claims = float((p_renew * technical_cost).sum())  # sum of P(renew) x cost
+    retained_expenses = retained_premium * expense_ratio  # 27% of the premium
     retained_contribution = retained_premium - retained_claims - retained_expenses
 
-    # --- New business ---
-    p_convert = conversion_probability(price_change_pct, segment_df["BonusMalus"])
-    quote_volume = len(segment_df) * quote_volume_multiplier
-    avg_p_convert = float(p_convert.mean())
-    avg_repriced_commercial_premium = float(repriced_commercial_premium.mean())
-    avg_technical_cost = float(technical_cost.mean())
+    # 2. New business: as many quotes as policies, at the segment's average premium and cost.
+    p_convert = conversion_probability(price_change_pct, segment_df["BonusMalus"])  # Phase 10
+    quote_volume = len(segment_df) * quote_volume_multiplier  # number of quotes
+    avg_p_convert = float(p_convert.mean())  # average conversion probability
+    avg_repriced_commercial_premium = float(repriced_commercial_premium.mean())  # average new premium
+    avg_technical_cost = float(technical_cost.mean())  # average expected cost
 
-    expected_new_policies = quote_volume * avg_p_convert
+    expected_new_policies = quote_volume * avg_p_convert  # quotes x conversion rate
     new_premium = expected_new_policies * avg_repriced_commercial_premium
     new_claims = expected_new_policies * avg_technical_cost
     new_expenses = new_premium * expense_ratio
     new_contribution = new_premium - new_claims - new_expenses
 
+    # 3. Totals.
     total_contribution = retained_contribution + new_contribution
     total_written_premium = retained_premium + new_premium
     total_policies = expected_renewals + expected_new_policies
@@ -127,72 +101,37 @@ def run_repricing_scenario(
     }
 
 
-def scenario_grid(segment_df: pd.DataFrame, price_changes: list[float], **kwargs) -> pd.DataFrame:
-    """`run_repricing_scenario` evaluated across a grid of price changes, one row per value."""
+def scenario_grid(segment_df, price_changes, **kwargs):
+    """run_repricing_scenario for a list of price changes: one row per price change."""
     rows = [run_repricing_scenario(segment_df, pct, **kwargs) for pct in price_changes]
     return pd.DataFrame(rows)
 
 
-# --------------------------------------------------------------------------- #
-# Multi-year projection (Phase 12: the app's "1/2/3-year outlook" view)
-# --------------------------------------------------------------------------- #
-
-
-def project_multi_year_scenario(
-    segment_df: pd.DataFrame,
-    price_change_pct: float,
-    n_years: int,
-    expense_ratio: float = DEFAULT_EXPENSE_RATIO,
-    quote_volume_multiplier: float = DEFAULT_QUOTE_VOLUME_MULTIPLIER,
-    cost_factor: float = 1.0,
-) -> pd.DataFrame:
+def project_multi_year_scenario(segment_df, price_change_pct, n_years, expense_ratio=DEFAULT_EXPENSE_RATIO,
+                                quote_volume_multiplier=DEFAULT_QUOTE_VOLUME_MULTIPLIER, cost_factor=1.0):
     """
-    Projects a segment's KPIs (policy count, written premium, incurred claims,
-    Loss Ratio, COR, ATP) for each of the next `n_years`, under a repricing
-    action applied once, at the start of Year 1.
+    The segment's KPIs over the next n years (used by the app), with the price
+    change applied once, at the start of year 1.
 
-    THE MODELING CHOICE THAT MAKES A MULTI-YEAR PROJECTION TRACTABLE
-    ---------------------------------------------------------------------
-    Year 1 absorbs the price *change* itself: existing policyholders decide
-    whether to renew, and prospects decide whether to convert, in reaction to
-    the repricing (`run_repricing_scenario`, Phase 11, used here unmodified.
-    the exact row-level, heterogeneity-aware calculation from Phase 11).
+    Year 1 = run_repricing_scenario (customers react to the price change).
+    Year 2 onwards: no further price change, so every customer renews at 88%
+    and every prospect converts at 15% (both formulas give their base rate at
+    0% change, whatever the tenure or the risk):
 
-    From Year 2 onward, no *further* price change is applied: the segment
-    is assumed to hold at its new, already-corrected price level. This is
-    not an approximation: `renewal_probability(0, tenure)` and
-    `conversion_probability(0, bonus_malus)` both collapse to their baseline
-    rate *for every policy regardless of tenure or risk level* (Phase 9/10's
-    own calibration: see their notebooks' Section on "the formula
-    converges to baseline at zero price change"). So Year 2+ can be computed
-    exactly from portfolio-level aggregates alone: no need to track
-    individual policies' tenure aging or risk mix: using the average
-    premium and average technical cost actually realized at the end of
-    Year 1 (which already reflects the repriced level and the Year-1
-    survivor/new-business mix).
+        policies(year n) = policies(year n-1) x 88% + quotes x 15%
 
-    A book that keeps renewing and acquiring new business at flat baseline
-    rates forever would grow without bound (`BASELINE_RENEWAL_RATE` +
-    `BASELINE_CONVERSION_RATE`-driven inflow both being positive, with no
-    modeled attrition beyond the renewal/conversion mechanics themselves) --
-    stated here as the boundary of this projection's realism: it is a
-    **KPI outlook under stable conditions**, not a long-run market-share
-    forecast, and should be read as such beyond a few years.
+    with the average premium and cost reached at the end of year 1. This is an
+    outlook under stable conditions, not a market-share forecast.
     """
-    from src.prospect.conversion_model import BASELINE_CONVERSION_RATE
-    from src.retention.renewal_model import BASELINE_RENEWAL_RATE
+    from src.prospect.conversion_model import BASELINE_CONVERSION_RATE  # 15%
+    from src.retention.renewal_model import BASELINE_RENEWAL_RATE  # 88%
 
-    year1 = run_repricing_scenario(
-        segment_df,
-        price_change_pct,
-        expense_ratio=expense_ratio,
-        quote_volume_multiplier=quote_volume_multiplier,
-        cost_factor=cost_factor,
-    )
+    year1 = run_repricing_scenario(segment_df, price_change_pct, expense_ratio=expense_ratio,
+                                   quote_volume_multiplier=quote_volume_multiplier, cost_factor=cost_factor)
 
-    quote_volume = len(segment_df) * quote_volume_multiplier
-    avg_premium_level = year1["total_written_premium"] / year1["total_policies"]
-    avg_technical_cost_level = (year1["retained_claims"] + year1["new_claims"]) / year1["total_policies"]
+    quote_volume = len(segment_df) * quote_volume_multiplier  # quotes per year
+    avg_premium_level = year1["total_written_premium"] / year1["total_policies"]  # average premium after year 1
+    avg_technical_cost_level = (year1["retained_claims"] + year1["new_claims"]) / year1["total_policies"]  # average cost after year 1
 
     rows = []
     policies = year1["total_policies"]
@@ -200,30 +139,22 @@ def project_multi_year_scenario(
     incurred_claims = year1["retained_claims"] + year1["new_claims"]
 
     for year in range(1, n_years + 1):
-        if year > 1:
-            # Steady state: every existing policy renews at BASELINE_RENEWAL_RATE (price change = 0
-            # from here on), and quote_volume new prospects convert at BASELINE_CONVERSION_RATE.
+        if year > 1:  # stable years: base rates only
             policies = policies * BASELINE_RENEWAL_RATE + quote_volume * BASELINE_CONVERSION_RATE
             written_premium = policies * avg_premium_level
             incurred_claims = policies * avg_technical_cost_level
 
-        expenses = written_premium * expense_ratio
+        expenses = written_premium * expense_ratio  # 27% of the premium
         loss_ratio = incurred_claims / written_premium
-        cor = loss_ratio + expense_ratio
-        atp = avg_premium_level
-        contribution = written_premium - incurred_claims - expenses
-
-        rows.append(
-            {
-                "year": year,
-                "policies": policies,
-                "written_premium": written_premium,
-                "incurred_claims": incurred_claims,
-                "loss_ratio": loss_ratio,
-                "cor": cor,
-                "atp": atp,
-                "contribution": contribution,
-            }
-        )
+        rows.append({
+            "year": year,
+            "policies": policies,
+            "written_premium": written_premium,
+            "incurred_claims": incurred_claims,
+            "loss_ratio": loss_ratio,
+            "cor": loss_ratio + expense_ratio,
+            "atp": avg_premium_level,
+            "contribution": written_premium - incurred_claims - expenses,
+        })
 
     return pd.DataFrame(rows)

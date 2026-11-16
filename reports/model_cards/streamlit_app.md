@@ -73,3 +73,11 @@ python scripts/distill_app_models.py
 
 Requires the Phase 7 artifacts (`models/freq_glm_refined.pkl`, `models/sev_glm.pkl`,
 `models/feature_encoder.joblib`); re-run after any re-training.
+
+## How the app shows its calculations
+
+Each page has a "How ... is calculated" panel: the Pricing Simulator shows the frequency and average-cost
+terms (value, where it comes from, coefficient, product) and the premium formula with the numbers; the
+Retention & Conversion page shows the logit calculation; the Portfolio Scenario page shows the cost
+relativity of the chosen segment and the year 1 breakdown (existing customers, new business). The home
+page shows how the Loss Ratios and the commercial loading are obtained.

@@ -1,31 +1,24 @@
 """
 3_Portfolio_Scenario.py
-=============================
-Phase 12: the dashboard's headline tool: pick a portfolio segment and a
-price change, and project Loss Ratio, Combined Operating Ratio (COR),
-Average Technical Premium (ATP), policy count, written premium and
-profitability contribution over the next 1, 2 or 3 years, with one click.
-Wraps Phase 11's `run_repricing_scenario` (Year 1) and Phase 12's
-`project_multi_year_scenario` (Year 2+): see that module's docstring for
-exactly what is exact vs. simplified in the multi-year projection.
+=======================
+Phase 12: pick a segment and a price change, and see Loss Ratio, COR, average
+premium, number of policies, premium and contribution over 1, 2 or 3 years.
+
+    Year 1: run_repricing_scenario (notebook 11): each customer renews with
+            its own P(renew), prospects buy with P(convert).
+    Year 2+: no further price change, so 88% renew and 15% of quotes convert.
+    contribution = premium - expected claims - 27% expenses
 """
 
-from __future__ import annotations
+import sys  # access to Python's module search path
+from pathlib import Path  # file paths
 
-import sys
-from pathlib import Path
+import pandas as pd  # tables
+import streamlit as st  # the app framework
 
-import pandas as pd
-import streamlit as st
-
-# Two directories need to be on sys.path: app/ (for `utils`, a sibling module) and the repo root (for
-# `scoring`/`src`, imported directly below): relying on just one, or on another page having already
-# run first in this process and added the other as a side effect, is what caused a real bug here: this
-# page threw ModuleNotFoundError when it was the *first* page loaded in a fresh process (e.g. a user
-# landing on it directly via URL, bypassing the home page's own sys.path setup).
-_APP_DIR = Path(__file__).resolve().parents[1]
-_PROJECT_ROOT = _APP_DIR.parent
-for _p in (_APP_DIR, _PROJECT_ROOT):
+_APP_DIR = Path(__file__).resolve().parents[1]  # app/ (for utils)
+_PROJECT_ROOT = _APP_DIR.parent  # project root (for scoring and src)
+for _p in (_APP_DIR, _PROJECT_ROOT):  # both are needed even when this page is opened first
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
@@ -81,15 +74,24 @@ st.caption(
     f"({len(segment_df) / len(df):.1%} of the book by policy count)."
 )
 
-# Expected cost of the segment relative to the book: attritional claims from the segment's own
-# experience, large losses at the flat loading (src/pricing/portfolio_kpis.py). The book itself is at
-# 1.0, the basis the commercial loading assumes (technical premium = expected cost).
-threshold = get_large_loss_threshold()
-cost_factor = experience_cost_factor(segment_df, threshold) / experience_cost_factor(df, threshold)
-st.caption(
-    f"Expected cost relative to the book: **{cost_factor:.2f}** "
-    "(attritional claims from the segment's own experience, large losses at the flat loading)."
-)
+# Expected cost of the segment relative to the book (notebook 08): its own capped claims plus the flat
+# large-loss loading, over its premium, divided by the same ratio for the whole book (= 1.0 for the book).
+threshold = get_large_loss_threshold()  # EUR 15,000 per claim
+factor_segment = experience_cost_factor(segment_df, threshold)  # segment: (capped claims + 33.54 x exposure) / earned premium
+factor_book = experience_cost_factor(df, threshold)  # same ratio for the whole book
+cost_factor = factor_segment / factor_book  # cost relativity of the segment
+st.caption(f"Expected cost relative to the book: **{cost_factor:.2f}**")
+with st.expander("How the cost relativity is calculated"):
+    capped = segment_df["sev_claim_amount"].clip(upper=threshold * segment_df["sev_claim_count"].clip(lower=1)).sum()  # capped claims
+    mutualised = (segment_df["large_loss_loading"] * segment_df["Exposure"]).sum()  # 33.54 x exposure
+    earned = segment_df["earned_premium"].sum()  # technical premium x exposure
+    st.markdown(
+        f"- capped claims of the segment (each claim up to EUR {threshold:,.0f}, column `sev_claim_amount`): **EUR {capped:,.0f}**\n"
+        f"- + large-loss loading × exposure (33.54 × {segment_df['Exposure'].sum():,.0f} years): **EUR {mutualised:,.0f}**\n"
+        f"- ÷ earned technical premium (technical premium × `Exposure`): **EUR {earned:,.0f}**\n"
+        f"- = segment ratio **{factor_segment:.4f}**; whole book ratio **{factor_book:.4f}**\n"
+        f"- cost relativity = {factor_segment:.4f} / {factor_book:.4f} = **{cost_factor:.3f}**"
+    )
 
 # --------------------------------------------------------------------------- #
 # Scenario controls
@@ -121,9 +123,7 @@ if run:
             segment_df, price_change_pct=0.0, n_years=horizon,
             expense_ratio=DEFAULT_EXPENSE_RATIO, cost_factor=cost_factor,
         )
-        # Year-1 detail (renewal/conversion rates): project_multi_year_scenario's own output doesn't
-        # carry these, since they're only meaningful as *rates* in Year 1 (Year 2+ uses the flat baseline
-        # rate for every policy by construction: see that function's docstring).
+        # Year 1 in detail (renewal and conversion rates, existing vs new business).
         year1_detail = run_repricing_scenario(
             segment_df, price_change_pct=price_change_pct, expense_ratio=DEFAULT_EXPENSE_RATIO, cost_factor=cost_factor
         )
@@ -163,6 +163,24 @@ if run:
         f"the full curves)."
     )
 
+    with st.expander("How year 1 is calculated"):
+        d = year1_detail  # the engine's breakdown
+        rows = pd.DataFrame({
+            "existing customers": [d["expected_renewals"], d["retained_premium"], d["retained_claims"],
+                                   DEFAULT_EXPENSE_RATIO * d["retained_premium"], d["retained_contribution"]],
+            "new business": [d["expected_new_policies"], d["new_premium"], d["new_claims"],
+                             DEFAULT_EXPENSE_RATIO * d["new_premium"], d["new_contribution"]],
+        }, index=["policies", "premium (EUR)", "claims (EUR)", "expenses 27% (EUR)", "contribution (EUR)"])
+        rows["total"] = rows.sum(axis=1)  # both sources together
+        st.dataframe(rows.style.format("{:,.0f}"), use_container_width=True)
+        st.markdown(
+            f"- **existing customers**: each policy counts for its P(renew) (its tenure, notebook 09); "
+            f"premium = commercial premium × (1 {price_change_pct:+.0%}); claims = technical premium × {cost_factor:.3f}\n"
+            f"- **new business**: {len(segment_df):,} quotes (assumption: as many as policies today) × "
+            f"{d['conversion_rate']:.1%} conversion (notebook 10), at the segment's average premium and cost\n"
+            f"- **contribution** = premium - claims - 27% × premium"
+        )
+
     st.divider()
     st.markdown("**Year-by-year detail**")
 
@@ -188,16 +206,14 @@ if run:
         st.bar_chart(chart2)
 
     st.caption(
-        "Year 1 uses the full row-level Phase 11 scenario engine (each policy's own tenure/risk "
-        "profile drives its renewal or conversion probability). From Year 2 onward, the price change "
-        "is assumed to hold flat at its new level, so the book renews/converts at portfolio baseline "
-        "rates: an exact aggregate calculation (not a re-approximation), documented in "
-        "`scoring/scenario_engine.py`. Treat this as a KPI outlook under stable conditions, not a "
-        "long-run market-share forecast."
+        "Year 1: each policy renews with its own probability (its tenure), prospects buy with the "
+        "conversion probability (notebook 11). From year 2: no further price change, so 88% of "
+        "policies renew and 15% of quotes convert (`scoring/scenario_engine.py`). An outlook under "
+        "stable conditions, not a market-share forecast."
     )
     st.caption(
-        "Expected claims use the segment's cost factor shown above, on the same basis as the "
-        "commercial loading: the whole book at a 0% price change shows a contribution of zero."
+        "Expected claims = technical premium x the segment's cost relativity shown above. The whole "
+        "book at a 0% price change gives a contribution of zero (check of the 37% loading)."
     )
 else:
     st.info("Choose a segment and a price change above, then click **Run scenario**.")

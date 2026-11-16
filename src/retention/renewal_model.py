@@ -1,154 +1,111 @@
 """
 renewal_model.py
-==================
-Phase 9: a documented, literature-calibrated **scenario simulator** for
-policy renewal, built because freMTPL2 has no renewal outcomes and no price-
-change history to learn an elasticity from (it is a single-year
-cross-section: see Phase 1). This module does not "fit" a model to
-observed behavior; it *specifies* one, with every parameter either derived
-from a real regulatory formula applied to this data, or cited to published
-literature, and states plainly which is which. See
-`docs/PROJECT_ROADMAP.md`'s Phase 9 decision note for the full rationale
-behind building a simulator at all, and `notebooks/09_retention_model.ipynb`
-for the worked derivation of every number below.
+================
+Phase 9: if we raise the price of a segment, how many existing customers
+leave?
 
-THE TENURE PROXY: DERIVED FROM THE REAL FRENCH BONUS-MALUS FORMULA
------------------------------------------------------------------------
-`BonusMalus` is not an arbitrary score: it is produced by a known,
-published regulatory formula (the French "coefficient de réduction-
-majoration"): each claim-free year multiplies the coefficient by 0.95 (a 5%
-discount), down to a floor of 50; each at-fault claim multiplies it by 1.25.
-Starting from the neutral value of 100, a policy with `BonusMalus <= 100`
-and no claims must have had at least
+WHY A SIMULATOR AND NOT A FITTED MODEL
+--------------------------------------
+freMTPL2 is a one-year photograph: it has no renewal outcome and no price
+change history, so there is nothing to learn an elasticity from. This module
+therefore SPECIFIES the renewal behaviour with stated assumptions, instead of
+estimating it. Every parameter is either computed from a real rule (the
+French bonus-malus) or an assumption in the range quoted by the literature.
 
-    years = ln(BonusMalus / 100) / ln(0.95)
+STEP 1: HOW LONG HAS THE CUSTOMER BEEN CLAIM-FREE? (tenure proxy)
+-----------------------------------------------------------------
+The French bonus-malus starts at 100 and is multiplied by 0.95 after every
+claim-free year (floor 50). Read backwards:
 
-claim-free years on this scale: a **lower bound on tenure**, not a
-fabricated number, derived from the same regulatory arithmetic that produced
-the column in the first place. It is a *lower bound*, not an exact tenure,
-for two reasons stated explicitly: (1) many policies (the large mass at the
-BM=50 floor: Phase 2 found this is 62.7% of exposure) are censored at "at
-least ~13.5 years," since the coefficient stops moving once it hits the
-floor; (2) a policy could have switched insurers and carried its bonus with
-it (common practice in France), so "years at *this* coefficient" is not
-identically "years as *this insurer's* customer." For `BonusMalus > 100`
-(a malus: a recent at-fault claim, only 1.15% of the book), the formula
-cannot cleanly separate tenure from claims count without full claims
-history, so a short default tenure is assigned instead (documented at
-`MALUS_DEFAULT_TENURE_YEARS`): a deliberate, stated simplification, not an
-attempt to reverse-engineer something the data can't support.
+    BonusMalus = 100 x 0.95^years   =>   years = ln(BonusMalus / 100) / ln(0.95)
 
-THE RENEWAL PROBABILITY FORMULA: LITERATURE-CITED, NOT FITTED
---------------------------------------------------------------------
-    logit(P(renew)) = logit(BASELINE_RENEWAL_RATE)
-                       + PRICE_ELASTICITY * price_change_pct * (1 - loyalty_dampening(tenure))
+Example: BonusMalus 57 -> ln(0.57) / ln(0.95) = -0.5621 / -0.0513 = 10.96 years.
+At the floor (50): 13.5 years, the most the formula can tell ("at least
+13.5 years"), so it is a lower bound. Above 100 (a recent claim, 1.15% of the
+book) tenure cannot be separated from the claims: 1 year is used.
 
-- `BASELINE_RENEWAL_RATE` (88%): a documented assumption in line with
-  commonly-cited retention rates for mature European personal motor books
-  (typically reported in the 80-90% range), not fitted from this dataset.
-- `PRICE_ELASTICITY`: a documented assumption, in line with semi-elasticity
-  ranges reported in P&C pricing-optimization literature (e.g. the CAS
-  monograph *"Price Optimization in Property/Casualty Insurance"*): sized
-  so a new, non-loyal customer facing a +10% price increase sees roughly a
-  5-6 percentage point drop in renewal probability, a moderate, middle-of-
-  the-cited-range elasticity, not an aggressive or conservative extreme.
-- `loyalty_dampening(tenure)`: long-tenured customers are empirically *less*
-  likely to shop around and switch even when price rises: the well-
-  documented "loyalty penalty" / price-walking phenomenon (see the UK FCA's
-  *General Insurance Pricing Practices Market Study*, 2020-2021, which found
-  and ultimately acted against exactly this pattern). The specific dampening
-  *magnitude* used here (`LOYALTY_MAX_DAMPENING`) is this project's own
-  illustrative assumption, directionally consistent with that documented
-  phenomenon, not a number taken from the FCA study itself.
+STEP 2: THE RENEWAL PROBABILITY
+-------------------------------
+A logistic curve, the usual shape for a probability:
+
+    logit(p) = ln(p / (1 - p))                  (the "log-odds")
+    logit(P(renew)) = logit(88%) + (-4.5) x price change x (1 - loyalty)
+    P(renew) = 1 / (1 + exp(-logit))
+
+    loyalty = 0.6 x min(tenure / 10, 1)         (0 for a new customer, 0.6 after 10 years)
+
+Hand example, +10% price:
+    logit(88%) = ln(0.88 / 0.12) = 1.9924
+    new customer (loyalty 0):   1.9924 - 4.5 x 0.10 x 1.0 = 1.5424 -> P = 82.4%
+    10+ years   (loyalty 0.6):  1.9924 - 4.5 x 0.10 x 0.4 = 1.8124 -> P = 86.0%
+    no price change: logit stays 1.9924 -> P = 88% for everybody.
+
+THE ASSUMPTIONS
+---------------
+  88%   baseline renewal rate: usual range for a mature European motor book (80-90%)
+  -4.5  price elasticity: a new customer facing +10% loses about 5-6 points of
+        renewal probability, a middle value of the pricing literature
+        (e.g. CAS monograph "Price Optimization in Property/Casualty Insurance")
+  60% / 10 years  loyalty: long-standing customers shop around less (the
+        "loyalty penalty" documented by the UK FCA market study, 2020-2021);
+        the size used here is this project's own illustrative choice.
 """
 
-from __future__ import annotations
+import numpy as np  # maths
+import pandas as pd  # tables
 
-import numpy as np
-import pandas as pd
-
-# --------------------------------------------------------------------------- #
-# Tenure proxy: derived from the real French bonus-malus formula
-# --------------------------------------------------------------------------- #
-
-BM_ANNUAL_DISCOUNT = 0.95  # French bonus-malus: -5% per claim-free year
-BM_NEUTRAL_START = 100.0  # every policy starts here
-MALUS_DEFAULT_TENURE_YEARS = 1.0  # documented simplification for BonusMalus > 100 (see module docstring)
+# --- Step 1: tenure proxy from the French bonus-malus rule ---
+BM_ANNUAL_DISCOUNT = 0.95  # each claim-free year multiplies the bonus-malus by 0.95
+BM_NEUTRAL_START = 100.0  # every driver starts at 100
+MALUS_DEFAULT_TENURE_YEARS = 1.0  # tenure used above 100 (recent claim)
 
 
-def derive_tenure_proxy(bonus_malus: pd.Series) -> pd.Series:
-    """
-    Lower-bound tenure (in years), derived from `BonusMalus` via the real
-    French no-claims-discount formula. See module docstring for the two
-    documented reasons this is a lower bound, not an exact tenure.
-    """
+def derive_tenure_proxy(bonus_malus):
+    """Claim-free years implied by the bonus-malus: ln(BM / 100) / ln(0.95), or 1 year above 100."""
     bm = bonus_malus.astype(float)
-    years_from_discount = np.log(bm.clip(upper=BM_NEUTRAL_START) / BM_NEUTRAL_START) / np.log(BM_ANNUAL_DISCOUNT)
+    years_from_discount = np.log(bm.clip(upper=BM_NEUTRAL_START) / BM_NEUTRAL_START) / np.log(BM_ANNUAL_DISCOUNT)  # the formula read backwards
     return pd.Series(
-        np.where(bm <= BM_NEUTRAL_START, years_from_discount, MALUS_DEFAULT_TENURE_YEARS),
+        np.where(bm <= BM_NEUTRAL_START, years_from_discount, MALUS_DEFAULT_TENURE_YEARS),  # 1 year for a malus
         index=bonus_malus.index,
         name="tenure_years_proxy",
     )
 
 
-# --------------------------------------------------------------------------- #
-# Renewal probability: literature-calibrated, not fitted (see module docstring)
-# --------------------------------------------------------------------------- #
-
-BASELINE_RENEWAL_RATE = 0.88  # documented assumption: see module docstring
-PRICE_ELASTICITY = -4.5  # documented assumption: see module docstring
-LOYALTY_SATURATION_YEARS = 10.0  # tenure at which loyalty dampening reaches its maximum
-LOYALTY_MAX_DAMPENING = 0.6  # a fully "saturated" long-tenured customer is 60% less price-sensitive
+# --- Step 2: renewal probability ---
+BASELINE_RENEWAL_RATE = 0.88  # renewal rate when the price does not change
+PRICE_ELASTICITY = -4.5  # effect of the price change on the log-odds
+LOYALTY_SATURATION_YEARS = 10.0  # loyalty is at its maximum after 10 years
+LOYALTY_MAX_DAMPENING = 0.6  # a 10+ year customer is 60% less sensitive to price
 
 
-def _logit(p: np.ndarray) -> np.ndarray:
+def _logit(p):
+    """Log-odds: ln(p / (1 - p))."""
     return np.log(p / (1 - p))
 
 
-def _inverse_logit(x: np.ndarray) -> np.ndarray:
+def _inverse_logit(x):
+    """Back from log-odds to a probability: 1 / (1 + exp(-x))."""
     return 1 / (1 + np.exp(-x))
 
 
-def loyalty_dampening(tenure_years: pd.Series) -> pd.Series:
-    """
-    0 for a brand-new customer (no dampening: full price sensitivity) up to
-    `LOYALTY_MAX_DAMPENING` for a customer at or beyond `LOYALTY_SATURATION_YEARS`
-    of tenure, ramping linearly in between.
-    """
-    fraction_saturated = (tenure_years / LOYALTY_SATURATION_YEARS).clip(upper=1.0)
+def loyalty_dampening(tenure_years):
+    """0.6 x min(tenure / 10, 1): from 0 (new customer) to 0.6 (10 years or more)."""
+    fraction_saturated = (tenure_years / LOYALTY_SATURATION_YEARS).clip(upper=1.0)  # share of the 10 years reached
     return fraction_saturated * LOYALTY_MAX_DAMPENING
 
 
-def renewal_probability(
-    price_change_pct: np.ndarray,
-    tenure_years: pd.Series,
-    base_rate: float = BASELINE_RENEWAL_RATE,
-    elasticity: float = PRICE_ELASTICITY,
-) -> np.ndarray:
+def renewal_probability(price_change_pct, tenure_years, base_rate=BASELINE_RENEWAL_RATE, elasticity=PRICE_ELASTICITY):
     """
-    Predicted renewal probability under a given price change, for policies
-    with the given tenure. `price_change_pct` is a fraction (0.10 = +10%),
-    broadcastable against `tenure_years` (a scalar or an array of the same
-    length).
+    P(renew) for a price change (0.10 = +10%) and a tenure in years.
+        logit(P) = logit(base rate) + elasticity x price change x (1 - loyalty)
     """
-    dampening = loyalty_dampening(tenure_years)
-    logit_p = _logit(np.array(base_rate)) + elasticity * np.asarray(price_change_pct) * (1 - dampening)
-    return _inverse_logit(logit_p)
+    dampening = loyalty_dampening(tenure_years)  # loyalty of each customer
+    logit_p = _logit(np.array(base_rate)) + elasticity * np.asarray(price_change_pct) * (1 - dampening)  # log-odds after the change
+    return _inverse_logit(logit_p)  # back to a probability
 
 
-def simulate_renewal_outcome(
-    price_change_pct: np.ndarray,
-    tenure_years: pd.Series,
-    random_state: int = 42,
-    **kwargs,
-) -> np.ndarray:
-    """
-    A single Bernoulli draw per policy from `renewal_probability`: for
-    demonstrating what a *realized* (not just expected) renewal outcome
-    looks like under a scenario. Phase 11's scenario engine works with the
-    probabilities directly (`renewal_probability`), not simulated draws;
-    this function exists for illustration and testing.
-    """
-    rng = np.random.default_rng(random_state)
+def simulate_renewal_outcome(price_change_pct, tenure_years, random_state=42, **kwargs):
+    """One random draw per policy (1 = renews, 0 = leaves), for illustration; Phase 11 uses the probabilities."""
+    rng = np.random.default_rng(random_state)  # reproducible random numbers
     p = renewal_probability(price_change_pct, tenure_years, **kwargs)
-    return rng.binomial(1, p)
+    return rng.binomial(1, p)  # 1 with probability p

@@ -1,42 +1,36 @@
 """
 utils.py
-=========
-Phase 12: shared, cached data/model loading for every page of the
-Streamlit app. Centralized here so each page imports the same cached
-objects instead of reloading models or rescoring the portfolio on every
-click (Streamlit re-runs the whole script on every interaction; `@st.cache_*`
-is what keeps that fast).
+========
+Phase 12: what every page of the app shares: loading the models and the
+portfolio once (cached), pricing one policy, formatting numbers, and a
+slider with an exact-value box.
 
-WHY THE APP LOADS `load_lite`, NOT THE FULL RESEARCH MODELS
-------------------------------------------------------------------
-`models/freq_glm_refined.pkl` and `models/sev_glm.pkl` (the full,
-notebook-facing `statsmodels` objects) are ~200MB combined.
-`scripts/distill_app_models.py` (run once, after training) produces the
-`models/app/` artifacts this file loads instead: a few KB, mathematically
-identical for scoring (`src/models/lightweight_glm.py`).
+Streamlit re-runs the whole page at every click; @st.cache_* keeps the
+loaded models and the priced portfolio in memory so this stays fast.
+
+The app loads the SMALL models of models/app/ (coefficients only, a few KB,
+written by scripts/distill_app_models.py): same premiums as the full models.
 """
 
-from __future__ import annotations
+import sys  # access to Python's module search path
+from pathlib import Path  # file paths
 
-import sys
-from pathlib import Path
+import joblib  # loads the saved models
+import pandas as pd  # tables
+import streamlit as st  # the app framework
 
-import joblib
-import pandas as pd
-import streamlit as st
-
-APP_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = APP_DIR.parent
+APP_DIR = Path(__file__).resolve().parent  # the app/ folder
+PROJECT_ROOT = APP_DIR.parent  # the project folder
 if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+    sys.path.insert(0, str(PROJECT_ROOT))  # make the project's code importable
 
-from scoring.score_technical_premium import TechnicalPremiumModel, score_technical_premium  # noqa: E402
-from src.pricing.commercial_premium import add_commercial_premium, calibrate_breakeven_loading  # noqa: E402
-from src.pricing.portfolio_kpis import DEFAULT_EXPENSE_RATIO, add_earned_premium  # noqa: E402
-from src.retention.renewal_model import derive_tenure_proxy  # noqa: E402
+from scoring.score_technical_premium import TechnicalPremiumModel, score_technical_premium  # noqa: E402  (Phase 7)
+from src.pricing.commercial_premium import add_commercial_premium, calibrate_breakeven_loading  # noqa: E402  (Phase 11)
+from src.pricing.portfolio_kpis import DEFAULT_EXPENSE_RATIO, add_earned_premium  # noqa: E402  (Phase 8)
+from src.retention.renewal_model import derive_tenure_proxy  # noqa: E402  (Phase 9)
 
-# Representative median population density per Area code (Phase 2, EDA notebook): lets a
-# non-technical user pick a familiar "area type" instead of typing an exact density figure.
+# Typical (median) population density of each Area code (Phase 2): lets a user pick an area type
+# instead of typing a density.
 AREA_TO_DENSITY = {
     "A: Rural": 27,
     "B: Small town": 72,
@@ -46,179 +40,106 @@ AREA_TO_DENSITY = {
     "F: Dense urban": 27000,
 }
 
-CATEGORICAL_ENCODER_COLS = ["VehBrand", "VehGas", "Region", "DrivAge_bin", "VehAge_bin"]
+CATEGORICAL_ENCODER_COLS = ["VehBrand", "VehGas", "Region", "DrivAge_bin", "VehAge_bin"]  # category columns of the refined GLM
 
 
 @st.cache_resource(show_spinner="Loading pricing models...")
-def load_model() -> TechnicalPremiumModel:
+def load_model():
+    """The small pricing models of models/app/ (loaded once)."""
     return TechnicalPremiumModel.load_lite(PROJECT_ROOT / "models")
 
 
 @st.cache_resource
-def load_category_options() -> dict[str, list[str]]:
-    """VehBrand / VehGas / Region options, read directly off the fitted encoder: never hand-typed,
-    so the app can never offer a category the model doesn't actually know."""
-    encoder = load_model().freq_encoder
-    return {
-        name: list(cats)
-        for name, cats in zip(CATEGORICAL_ENCODER_COLS, encoder.onehot_encoder_.categories_)
-        if name in ("VehBrand", "VehGas", "Region")
-    }
+def load_category_options():
+    """Brands, fuels and regions known by the model (read from its encoder, never typed by hand)."""
+    encoder = load_model().freq_encoder  # the refined GLM's encoder
+    return {name: list(encoder.categories_[name]) for name in ("VehBrand", "VehGas", "Region")}
 
 
-@st.cache_data(show_spinner="Scoring the portfolio (one-time, then cached)...")
-def load_scored_portfolio() -> tuple[pd.DataFrame, float]:
+@st.cache_data(show_spinner="Pricing the portfolio (once, then cached)...")
+def load_scored_portfolio():
     """
-    The full policy-level portfolio (Phase 1), scored with the current
-    technical + commercial premium and each policy's derived tenure proxy
-    (Phase 9). Returns `(df, commercial_loading)`: computed once per app
-    session/process, not on every widget interaction.
+    Every policy of the dataset, priced: technical premium (Phase 7), tenure
+    (Phase 9), earned premium, commercial premium (Phase 11).
+    Returns (table, commercial loading).
     """
-    df = pd.read_parquet(PROJECT_ROOT / "data" / "processed" / "policy_level_clean.parquet")
-    model = load_model()
-    scored = score_technical_premium(df, model)
-    df = pd.concat([df.reset_index(drop=True), scored.reset_index(drop=True)], axis=1)
-    df["tenure_years_proxy"] = derive_tenure_proxy(df["BonusMalus"])
-    df = add_earned_premium(df)
-
-    # The technical premium is the expected claims cost (Phase 7), so the loading only covers expenses
-    # (Phase 11): expected Loss Ratio of 100%.
-    loading = calibrate_breakeven_loading(1.0, DEFAULT_EXPENSE_RATIO)
-    df = add_commercial_premium(df, loading)
+    df = pd.read_parquet(PROJECT_ROOT / "data" / "processed" / "policy_level_clean.parquet")  # every policy
+    scored = score_technical_premium(df, load_model())  # frequency, average cost, loading, technical premium
+    df = pd.concat([df.reset_index(drop=True), scored.reset_index(drop=True)], axis=1)  # side by side
+    df["tenure_years_proxy"] = derive_tenure_proxy(df["BonusMalus"])  # claim-free years from the bonus-malus
+    df = add_earned_premium(df)  # technical premium x exposure
+    loading = calibrate_breakeven_loading(1.0, DEFAULT_EXPENSE_RATIO)  # 1 / (1 - 27%) - 1 = 37%
+    df = add_commercial_premium(df, loading)  # technical premium x 1.37
     return df, loading
 
 
-def score_one_policy(
-    drivage: int,
-    bonus_malus: int,
-    vehpower: int,
-    vehage: int,
-    density: float,
-    vehbrand: str,
-    vehgas: str,
-    region: str,
-    exposure: float = 1.0,
-) -> dict:
-    """Scores a single hypothetical policy: the Pricing Simulator page's core call."""
-    model = load_model()
-    policy_df = pd.DataFrame(
-        [
-            {
-                "DrivAge": drivage,
-                "BonusMalus": bonus_malus,
-                "VehPower": vehpower,
-                "VehAge": vehage,
-                "Density": density,
-                "VehBrand": vehbrand,
-                "VehGas": vehgas,
-                "Region": region,
-                "Exposure": exposure,
-            }
-        ]
-    )
-    scored = score_technical_premium(policy_df, model)
-    loading = get_commercial_loading()
-    scored["commercial_premium"] = scored["technical_premium"] * (1 + loading)
+def make_policy_table(drivage, bonus_malus, vehpower, vehage, density, vehbrand, vehgas, region, exposure=1.0):
+    """One-row table with the same columns as the dataset, from the values typed in the app."""
+    return pd.DataFrame([{
+        "DrivAge": drivage, "BonusMalus": bonus_malus, "VehPower": vehpower, "VehAge": vehage,
+        "Density": density, "VehBrand": vehbrand, "VehGas": vehgas, "Region": region, "Exposure": exposure,
+    }])
+
+
+def score_one_policy(drivage, bonus_malus, vehpower, vehage, density, vehbrand, vehgas, region, exposure=1.0):
+    """Technical and commercial premium of one policy typed in the Pricing Simulator."""
+    policy_df = make_policy_table(drivage, bonus_malus, vehpower, vehage, density, vehbrand, vehgas, region, exposure)
+    scored = score_technical_premium(policy_df, load_model())  # same function as the notebooks
+    scored["commercial_premium"] = scored["technical_premium"] * (1 + get_commercial_loading())  # + 37%
     return scored.iloc[0].to_dict()
 
 
 @st.cache_resource
-def get_large_loss_threshold() -> float:
-    """Large-loss threshold (EUR per claim) from the severity artifact (Phase 6)."""
+def get_large_loss_threshold():
+    """Large-loss threshold, EUR 15,000 per claim (Phase 6), read from the saved severity model."""
     return float(joblib.load(PROJECT_ROOT / "models" / "app" / "sev_glm.pkl")["large_loss_threshold"])
 
 
-def get_commercial_loading() -> float:
-    """
-    The single source of truth for the app's commercial loading: the value
-    that brings the *current* portfolio to exactly 100% COR (Phase 11),
-    computed once inside `load_scored_portfolio` (itself `@st.cache_data`-cached)
-    and reused everywhere else in the app, including single-policy pricing.
-    """
+def get_commercial_loading():
+    """The commercial loading (37%), computed once with the portfolio and reused everywhere."""
     _, loading = load_scored_portfolio()
     return loading
 
 
-def format_eur(value: float) -> str:
+def format_eur(value):
+    """1234.5 -> 'EUR 1,235' style text."""
     return f"€{value:,.0f}"
 
 
-def format_pct(value: float, decimals: int = 1) -> str:
+def format_pct(value, decimals=1):
+    """0.1234 -> '12.3%'."""
     return f"{value * 100:.{decimals}f}%"
 
 
-# --------------------------------------------------------------------------- #
-# Slider + exact-value input widget
-# --------------------------------------------------------------------------- #
-
-
-def slider_with_input(
-    label: str,
-    min_value: float,
-    max_value: float,
-    value: float,
-    step: float = 1,
-    key: str = "",
-    help: str | None = None,
-    fmt: str | None = None,
-    is_percent: bool = False,
-):
+def slider_with_input(label, min_value, max_value, value, step=1, key="", help=None, fmt=None, is_percent=False):
     """
-    A slider paired with a number box showing the exact same value, kept in
-    sync: drag the slider for a quick, approximate pick, or type into the
-    box next to it for an exact one (e.g. "BonusMalus = 137"), without
-    hunting along the slider track.
+    A slider and a number box showing the same value: drag for a quick pick,
+    type for an exact one (e.g. BonusMalus = 137).
 
-    THE STREAMLIT GOTCHA THIS WORKS AROUND
-    ---------------------------------------
-    A widget's `value=` argument is only honored on the very first run; once
-    its `key` has an entry in `st.session_state` (from that first run
-    onward), Streamlit reads the widget's displayed value from
-    `st.session_state[key]` and silently *ignores* `value=` on every rerun.
-    So keeping two widgets in sync via a third, separate "shared" state
-    variable does not work: each widget snaps back to its own last value.
-    The fix is to never pass `value=` past the first run, and have each
-    widget's `on_change` callback write straight into the *other* widget's
-    own session_state key, so on the next rerun, that other widget's
-    persisted state already reflects the new number.
+    Streamlit only uses `value=` the first time; after that it reads each
+    widget's value from st.session_state. So the two widgets are kept in sync
+    by writing, when one changes, directly into the other's session_state key.
     """
     slider_key = f"{key}_slider"
     number_key = f"{key}_number"
 
-    # Seed both widgets' state once, on the very first run only: every later run relies
-    # entirely on session_state (kept in sync by the callbacks below), never on `value=`.
-    if slider_key not in st.session_state and number_key not in st.session_state:
+    if slider_key not in st.session_state and number_key not in st.session_state:  # first run only
         st.session_state[slider_key] = value
         st.session_state[number_key] = value
 
-    def _sync_from_slider():
+    def _sync_from_slider():  # slider moved: copy its value into the box
         st.session_state[number_key] = st.session_state[slider_key]
 
-    def _sync_from_number():
+    def _sync_from_number():  # box changed: copy its value into the slider
         st.session_state[slider_key] = st.session_state[number_key]
 
     col_slider, col_number = st.columns([3, 1])
     with col_slider:
-        st.slider(
-            label,
-            min_value=min_value,
-            max_value=max_value,
-            step=step,
-            key=slider_key,
-            help=help,
-            format=fmt,
-            on_change=_sync_from_slider,
-        )
+        st.slider(label, min_value=min_value, max_value=max_value, step=step, key=slider_key,
+                  help=help, format=fmt, on_change=_sync_from_slider)
     with col_number:
-        st.number_input(
-            "Exact value",
-            min_value=min_value,
-            max_value=max_value,
-            step=step,
-            key=number_key,
-            label_visibility="collapsed",
-            on_change=_sync_from_number,
-        )
+        st.number_input("Exact value", min_value=min_value, max_value=max_value, step=step, key=number_key,
+                        label_visibility="collapsed", on_change=_sync_from_number)
 
     result = st.session_state[slider_key]
-    return result / 100.0 if is_percent else result
+    return result / 100.0 if is_percent else result  # percentages are returned as fractions (10 -> 0.10)

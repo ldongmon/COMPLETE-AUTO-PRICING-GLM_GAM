@@ -68,3 +68,43 @@ jupyter nbconvert --to notebook --execute --inplace notebooks/06_severity_model_
 ```
 
 Requires `train.parquet`, `val.parquet` and `models/feature_encoder.joblib` (Phase 3).
+
+## Worked example 1: cutting a real claim in two (IDpol 2261431)
+
+**The policy.** A train policy with one paid claim of EUR 40,000 (shown highlighted in notebook 06).
+
+| Step | Calculation | Where it comes from |
+|---|---|---|
+| Claim paid | EUR 40,000.00 | column `sev_claim_amount` |
+| Attritional part | min(40,000, 15,000) = **EUR 15,000** | goes into the Gamma GLM |
+| Large-loss part | max(40,000 - 15,000, 0) = **EUR 25,000** | goes into the shared pot |
+
+## Worked example 2: the large-loss loading = EUR 33.54 per year
+
+| Step | Calculation | Where it comes from |
+|---|---|---|
+| The pot | sum of the large-loss parts of the train claims = EUR 7,112,014 | columns `sev_claim_amount`, `sev_claim_count` |
+| Years insured | sum of Exposure of all 401,175 train policies = 212,076.8 | column `Exposure` |
+| **Loading** | 7,112,014 / 212,076.8 = **EUR 33.54 per year** | pot / years insured |
+
+**Reading.** Every insured year pays its share of the large claims, whether or not the policy had a claim
+(mutualisation, the burning cost of an excess-of-loss layer).
+
+## Worked example 3: the expected average cost of IDpol 137202 = EUR 1,480.00
+
+**The policy.** The first validation policy with a paid claim (shown highlighted in notebook 06):
+BonusMalus 50, power 6, car 2 years old, brand B1 (reference), region R52, one claim of EUR 2,256.25.
+
+| Term | Calculation | Where it comes from |
+|---|---|---|
+| Intercept | 7.1063 | Gamma GLM |
+| BonusMalus | 0.00207 x 50 = +0.1035 | dataset, Gamma GLM |
+| VehPower | 0.01377 x 6 = +0.0826 | same |
+| VehAge | -0.0090 x 2 = -0.0181 | same |
+| Region R52 | +0.0253 | same |
+| **Total** | **7.2998** | |
+
+Expected average cost = exp(7.2998) = **EUR 1,480.00** per claim (statsmodels: EUR 1,480.00).
+
+**Reading.** The policy actually paid EUR 2,256.25. One claim is far from its expectation: the model gives
+an average over many similar policies, not a forecast of each claim.

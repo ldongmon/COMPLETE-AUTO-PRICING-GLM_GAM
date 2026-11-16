@@ -67,3 +67,30 @@ jupyter nbconvert --to notebook --execute --inplace notebooks/04_frequency_model
 ```
 
 Requires `data/processed/train.parquet`, `val.parquet` and `models/feature_encoder.joblib` (Phase 3).
+
+## Worked example: the frequency of IDpol 3166632 = 0.0451 claims per year
+
+**The policy.** A real row of the validation set (`val.parquet`, first row; shown highlighted in
+notebook 04): driver aged 75, BonusMalus 50, power 9, density 49 (rural), car 1 year old, brand B12,
+petrol (Regular), region R24, insured 0.16 year.
+
+| Term | Calculation | Where it comes from |
+|---|---|---|
+| Intercept | -4.9396 | Phase 4 GLM |
+| DrivAge | 0.00575 x 75 = +0.4314 | 75 read in the dataset, coefficient of the GLM |
+| BonusMalus | 0.0260 x 50 = +1.2983 | same |
+| VehPower | 0.0338 x 9 = +0.3039 | same |
+| Density | 0.0756 x ln(49) = 0.0756 x 3.8918 = +0.2941 | same |
+| VehAge | -0.0182 x 1 = -0.0182 | same |
+| Brand B12 | -0.3288 | same |
+| Petrol (Regular) | -0.1510 | same |
+| Region R24 | +0.0118 | same |
+| **Total** | **-3.0981** | |
+
+| Step | Calculation | Where it comes from |
+|---|---|---|
+| Frequency per year | exp(-3.0981) = **0.0451** | log link of the GLM |
+| Expected claims over its exposure | 0.16 x 0.0451 = **0.0072** | column Exposure |
+
+**Reading.** statsmodels gives the same 0.0072: the GLM is only this sum of coefficients followed by an
+exponential. Notebook 04 does the same for IDpol 3191811 (0.0652 claims per year, 0.0176 over 0.27 year).
